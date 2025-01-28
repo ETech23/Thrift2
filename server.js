@@ -21,6 +21,15 @@ const io = new Server(server, {
     cors: { origin: "*" }
 });
 
+// Allow Frontend URL to Access Backend
+const FRONTEND_URL = process.env.FRONTEND_URL || "http://localhost:5000";
+
+app.use(cors({
+    origin: FRONTEND_URL, // Allow only this frontend
+    credentials: true,    // Allow cookies (if needed)
+}));
+
+
 // Connect to MongoDB Atlas
 mongoose.connect(process.env.MONGO_URI,).then(() => console.log("✅ MongoDB Connected")).catch(err => console.log("❌ MongoDB Error:", err));
 
@@ -158,6 +167,25 @@ io.on("connection", (socket) => {
         await message.save();
         io.to(roomId).emit("receiveMessage", message);
     });
+    socket.on("typing", ({ senderId, receiverId }) => {
+	io.to(receiverId).emit("showTyping", { senderId });
+    });
+    socket.on("receiveMessage", (message) => {
+	const messageDiv = document.createElement("div");
+messageDiv.className = `message ${message.sender === senderId ? "sent" : "received"}`;
+    messageDiv.innerHTML = `${message.text} <span class="status">${message.read ? "Seen" : "Delivered"}</span>`;
+    chatMessages.appendChild(messageDiv);
+    chatMessages.scrollTop = chatMessages.scrollHeight;
+
+    // Mark message as read
+    if (message.sender !== senderId) {
+        socket.emit("markAsRead", { messageId: message._id });
+    }
+});
+    socket.on("markAsRead", async ({ messageId }) => {
+    await Message.findByIdAndUpdate(messageId, { read: true });
+    io.emit("messageRead", { messageId });
+});
 
     socket.on("disconnect", () => {
         console.log("🔴 User disconnected:", socket.id);
@@ -221,6 +249,30 @@ io.on("connection", (socket) => {
             io.to(receiverId).emit("receiveMessage", message);
         }
     });
+    socket.on("typing", ({ senderId, receiverId }) => {
+	io.to(receiverId).emit("showTyping", { senderId });
+});
+    socket.on("markAsRead", async ({ messageId }) => {
+    await Message.findByIdAndUpdate(messageId, { read: true });
+    io.emit("messageRead", { messageId });
+});
+    const multer = require("multer");
+const storage = multer.memoryStorage();
+const upload = multer({ storage });
+
+app.post("/messages/audio", upload.single("audio"), async (req, res) => {
+    const { sender, receiver } = req.body;
+    const audioBuffer = req.file.buffer;
+    
+    // Upload to Cloudinary or S3
+    const audioUrl = await uploadToCloudStorage(audioBuffer);
+
+    const message = new Message({ sender, receiver, audioUrl });
+    await message.save();
+
+    io.to(receiver).emit("receiveMessage", message);
+    res.status(201).json({ success: true, audioUrl });
+});
 
     // Handle disconnection
     socket.on("disconnect", () => {
