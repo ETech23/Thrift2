@@ -47,6 +47,12 @@ const storage = new CloudinaryStorage({
 });
 const upload = multer({ storage });
 
+// Test route
+app.get("/api/test", (req, res) => {
+    res.json({ message: "API is working!" });
+});
+
+
 // User Schema
 const UserSchema = new mongoose.Schema({
     username: { type: String, required: true },
