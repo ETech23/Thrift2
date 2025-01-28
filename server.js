@@ -13,6 +13,7 @@ const { Server } = require("socket.io");
 // Initialize Express
 const app = express();
 app.use(cors());
+app.use(express.json());
 
 // Create HTTP server for Socket.io
 const server = http.createServer(app);
