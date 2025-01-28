@@ -101,14 +101,28 @@ const authenticate = (req, res, next) => {
 
 // User Registration
 app.post("/api/register", async (req, res) => {
-    const { username, email, password } = req.body;
-    const hashedPassword = await bcrypt.hash(password, 10);
-    const newUser = new User({ username, email, password: hashedPassword });
+    try {
+        const { name, email, password } = req.body;
+        if (!name || !email || !password) {
+            return res.status(400).json({ success: false, message: "All fields are required." });
+        }
 
-    await newUser.save();
-    res.json({ success: true, message: "User registered successfully!" });
+        const existingUser = await User.findOne({ email });
+        if (existingUser) {
+            return res.status(400).json({ success: false, message: "Email already in use." });
+        }
+
+        const hashedPassword = await bcrypt.hash(password, 10);
+        const user = new User({ name, email, password: hashedPassword });
+
+        await user.save();
+
+        res.json({ success: true, message: "User registered successfully!" });
+    } catch (error) {
+        console.error("Registration Error:", error);
+        res.status(500).json({ success: false, message: "Server error" });
+    }
 });
-
 // User Login
 app.post("/api/login", async (req, res) => {
     const { email, password } = req.body;
