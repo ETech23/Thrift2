@@ -114,14 +114,23 @@ app.post("/api/login", async (req, res) => {
     const { email, password } = req.body;
     const user = await User.findOne({ email });
 
-    if (!user || !(await bcrypt.compare(password, user.password))) {
-        return res.status(400).json({ success: false, message: "Invalid credentials" });
+    if (!user) {
+        return res.status(400).json({ success: false, message: "User not found" });
     }
 
-    const token = jwt.sign({ userId: user._id }, process.env.JWT_SECRET, { expiresIn: "1h" });
-    res.json({ success: true, token });
-});
+    const isMatch = await bcrypt.compare(password, user.password);
+    if (!isMatch) {
+        return res.status(400).json({ success: false, message: "Invalid password" });
+    }
 
+    const token = jwt.sign({ userId: user._id }, process.env.JWT_SECRET, { expiresIn: "12h" });
+
+    res.json({
+        success: true,
+        token,
+        user: { _id: user._id, email: user.email, name: user.name }  // ✅ Ensure user._id is included
+    });
+});
 // Create an Item (with Location & Image Upload)
 app.post("/api/items/create", authenticate, upload.single("image"), async (req, res) => {
     const { name, price, category, location, anonymous } = req.body;
