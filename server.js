@@ -25,7 +25,7 @@ const io = new Server(server, {
 const FRONTEND_URL = process.env.FRONTEND_URL || "http://localhost:5000";
 
 app.use(cors({
-    origin: FRONTEND_URL, // Allow only this frontend
+    origin: "https://thrift-a.vercel.app", // Allow only this frontend
     credentials: true,    // Allow cookies (if needed)
 }));
 
