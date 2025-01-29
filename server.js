@@ -102,8 +102,9 @@ const authenticate = (req, res, next) => {
 // User Registration
 app.post("/api/register", async (req, res) => {
     try {
-        const { name, email, password } = req.body;
-        if (!name || !email || !password) {
+        const { username, email, password } = req.body;  // ✅ Expect "username", not "name"
+
+        if (!username || !email || !password) {
             return res.status(400).json({ success: false, message: "All fields are required." });
         }
 
@@ -113,19 +114,18 @@ app.post("/api/register", async (req, res) => {
         }
 
         const hashedPassword = await bcrypt.hash(password, 10);
-        const user = new User({ name, email, password: hashedPassword });
+        const user = new User({ username, email, password: hashedPassword });  // ✅ Change "name" to "username"
 
         await user.save();
+        console.log("✅ New User Registered:", user);
 
-        console.log("✅ New User Registered:", user);  // ✅ Debugging output
         res.json({ success: true, message: "User registered successfully!" });
 
     } catch (error) {
-        console.error("❌ Registration Error:", error);  // ✅ Log full error details
+        console.error("❌ Registration Error:", error);
         res.status(500).json({ success: false, message: "Server error", error: error.message });
     }
 });
-
 // User Login
 app.post("/api/login", async (req, res) => {
     const { email, password } = req.body;
