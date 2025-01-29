@@ -168,7 +168,7 @@ app.post("/api/items/create", authenticate, upload.single("image"), async (req, 
             location,
             imageUrl,
             anonymous,
-            postedBy: req.userId
+            seller: req.userId
         });
 
         await newItem.save();
