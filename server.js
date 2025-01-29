@@ -117,12 +117,15 @@ app.post("/api/register", async (req, res) => {
 
         await user.save();
 
+        console.log("✅ New User Registered:", user);  // ✅ Debugging output
         res.json({ success: true, message: "User registered successfully!" });
+
     } catch (error) {
-        console.error("Registration Error:", error);
-        res.status(500).json({ success: false, message: "Server error" });
+        console.error("❌ Registration Error:", error);  // ✅ Log full error details
+        res.status(500).json({ success: false, message: "Server error", error: error.message });
     }
 });
+
 // User Login
 app.post("/api/login", async (req, res) => {
     const { email, password } = req.body;
