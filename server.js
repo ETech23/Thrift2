@@ -167,21 +167,41 @@ app.post("/api/items/create", authenticate, upload.single("image"), async (req, 
     res.json({ success: true, message: "Item created successfully!" });
 });
 
-// Fetch Items with Filtering
-app.get("/api/items", async (req, res) => {
-    let { category, minPrice, maxPrice, keyword, location } = req.query;
-    let filter = {};
+// Fetch a Single Item by ID
+app.get("/api/items/:id", async (req, res) => {
+    try {
+        const item = await Item.findById(req.params.id).populate("seller", "username email");
+        if (!item) {
+            return res.status(404).json({ success: false, message: "Item not found" });
+        }
 
-    if (category) filter.category = category;
-    if (minPrice) filter.price = { $gte: parseFloat(minPrice) };
-    if (maxPrice) filter.price = { ...filter.price, $lte: parseFloat(maxPrice) };
-    if (keyword) filter.name = { $regex: keyword, $options: "i" };
-    if (location) filter.location = { $regex: location, $options: "i" };
-
-    const items = await Item.find(filter).populate("postedBy", "username email");
-    res.json({ success: true, items });
+        res.json({ success: true, item });
+    } catch (error) {
+        console.error("❌ Error fetching item:", error);
+        res.status(500).json({ success: false, message: "Server error" });
+    }
 });
 
+// Fetch Items with Filtering
+app.get("/api/items", async (req, res) => {
+    try {
+        let { category, minPrice, maxPrice, keyword, location } = req.query;
+        let filter = {};
+
+        if (category) filter.category = category;
+        if (minPrice) filter.price = { $gte: parseFloat(minPrice) };
+        if (maxPrice) filter.price = { ...filter.price, $lte: parseFloat(maxPrice) };
+        if (keyword) filter.name = { $regex: keyword, $options: "i" };
+        if (location) filter.location = { $regex: location, $options: "i" };
+
+        const items = await Item.find(filter).populate("seller", "username email");
+
+        res.json({ success: true, items });
+    } catch (error) {
+        console.error("❌ Error fetching filtered items:", error);
+        res.status(500).json({ success: false, message: "Server error" });
+    }
+});
 // Real-time Chat with Socket.io
 io.on("connection", (socket) => {
     console.log("🟢 User connected:", socket.id);
@@ -234,6 +254,33 @@ app.get("/api/chat/:userId", authenticate, async (req, res) => {
     }).sort({ timestamp: 1 });
 
     res.json({ success: true, messages });
+});
+
+app.post("/api/chat/start", async (req, res) => {
+    try {
+        const { userId, sellerId, anonymous } = req.body;
+
+        if (!userId || !sellerId) {
+            return res.status(400).json({ success: false, message: "Missing user or seller ID" });
+        }
+
+        const existingChat = await Chat.findOne({ participants: { $all: [userId, sellerId] } });
+        if (existingChat) {
+            return res.json({ success: true, chatId: existingChat._id });
+        }
+
+        const newChat = new Chat({
+            participants: [userId, sellerId],
+            anonymous,
+        });
+
+        await newChat.save();
+        res.json({ success: true, chatId: newChat._id });
+
+    } catch (error) {
+        console.error("Error starting chat:", error);
+        res.status(500).json({ success: false, message: "Server error" });
+    }
 });
 
 const nodemailer = require("nodemailer");
