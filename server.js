@@ -70,6 +70,7 @@ const ItemSchema = new mongoose.Schema({
     location: { type: String, required: true },
     imageUrl: { type: String, required: true },
     anonymous: { type: Boolean, default: false },
+    seller: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true }  ,
     postedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" }
 });
 
@@ -185,7 +186,7 @@ app.get("/api/items/:id", async (req, res) => {
 // Fetch Items with Filtering
 app.get("/api/items", async (req, res) => {
     try {
-        let { category, minPrice, maxPrice, keyword, location } = req.query;
+        let { category, minPrice, maxPrice, keyword, location, limit } = req.query;
         let filter = {};
 
         if (category) filter.category = category;
@@ -194,14 +195,22 @@ app.get("/api/items", async (req, res) => {
         if (keyword) filter.name = { $regex: keyword, $options: "i" };
         if (location) filter.location = { $regex: location, $options: "i" };
 
-        const items = await Item.find(filter).populate("seller", "username email");
+        const query = Item.find(filter).populate("seller", "username email");
+        if (limit) query.limit(parseInt(limit));
+
+        const items = await query;
+
+        if (!items || items.length === 0) {
+            return res.json({ success: true, items: [] });  // ✅ Always return an empty array if no items
+        }
 
         res.json({ success: true, items });
     } catch (error) {
         console.error("❌ Error fetching filtered items:", error);
-        res.status(500).json({ success: false, message: "Server error" });
+        res.status(500).json({ success: false, message: "Server error", items: [] });  // ✅ Always return `items`
     }
 });
+
 // Real-time Chat with Socket.io
 io.on("connection", (socket) => {
     console.log("🟢 User connected:", socket.id);
