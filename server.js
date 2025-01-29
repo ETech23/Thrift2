@@ -149,25 +149,37 @@ app.post("/api/login", async (req, res) => {
         user: { _id: user._id, email: user.email, name: user.name }  // ✅ Ensure user._id is included
     });
 });
-// Create an Item (with Location & Image Upload)
 app.post("/api/items/create", authenticate, upload.single("image"), async (req, res) => {
-    const { name, price, category, location, anonymous } = req.body;
-    const imageUrl = req.file.path;
+    try {
+        console.log("🔍 Received Data:", req.body);  // ✅ Debugging
+        console.log("🔍 Uploaded File:", req.file);  // ✅ Debugging file upload
 
-    const newItem = new Item({
-        name,
-        price,
-        category,
-        location,
-        imageUrl,
-        anonymous,
-        postedBy: req.userId
-    });
+        const { name, price, category, location, anonymous } = req.body;
+        if (!req.file) {
+            return res.status(400).json({ success: false, message: "Image upload failed." });
+        }
 
-    await newItem.save();
-    res.json({ success: true, message: "Item created successfully!" });
+        const imageUrl = req.file.path;
+
+        const newItem = new Item({
+            name,
+            price,
+            category,
+            location,
+            imageUrl,
+            anonymous,
+            postedBy: req.userId
+        });
+
+        await newItem.save();
+        console.log("✅ Item Saved:", newItem);
+        res.json({ success: true, message: "Item created successfully!" });
+
+    } catch (error) {
+        console.error("❌ Error creating item:", error);
+        res.status(500).json({ success: false, message: "Server error", error: error.message });
+    }
 });
-
 // Fetch a Single Item by ID
 app.get("/api/items/:id", async (req, res) => {
     try {
