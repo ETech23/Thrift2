@@ -64,14 +64,80 @@ const User = mongoose.model("User", UserSchema);
 
 // Item Schema
 const ItemSchema = new mongoose.Schema({
-    name: { type: String, required: true },
-    price: { type: Number, required: true },
-    category: { type: String, required: true },
-    location: { type: String, required: true },
-    imageUrl: { type: String, required: true },
-    anonymous: { type: Boolean, default: false },
-    seller: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true }  ,
-    postedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" }
+    name: { 
+        type: String, 
+        required: true 
+    },
+    price: { 
+        type: Number, 
+        required: true 
+    },
+    currency: { 
+        type: String, 
+        required: true,
+        default: 'NGN',
+        enum: ['NGN', 'USD', 'EUR', 'GBP', 'KES', 'ZAR', 'AED', 'GHS', 'XAF', 'XOF']
+    },
+    formattedPrice: { 
+        type: String,
+        required: true
+    },
+    category: { 
+        type: String, 
+        required: true 
+    },
+    location: { 
+        type: String, 
+        required: true 
+    },
+    imageUrl: { 
+        type: String, 
+        required: true 
+    },
+    anonymous: { 
+        type: Boolean, 
+        default: false 
+    },
+    seller: { 
+        type: mongoose.Schema.Types.ObjectId, 
+        ref: "User", 
+        required: true 
+    },
+    postedBy: { 
+        type: mongoose.Schema.Types.ObjectId, 
+        ref: "User" 
+    }
+}, {
+    timestamps: true,
+    toJSON: { 
+        virtuals: true,
+        transform: function(doc, ret) {
+            // Add formatted price if it doesn't exist
+            if (!ret.formattedPrice) {
+                const currencySymbol = {
+                    'NGN': '₦', 'USD': '$', 'EUR': '€', 'GBP': '£',
+                    'KES': 'KSh', 'ZAR': 'R', 'AED': 'د.إ', 'GHS': '₵',
+                    'XAF': 'CFA', 'XOF': 'CFA'
+                };
+                ret.formattedPrice = `${currencySymbol[ret.currency]}${ret.price.toLocaleString()}`;
+            }
+            return ret;
+        }
+    }
+});
+
+// Pre-save middleware to ensure formattedPrice is set
+ItemSchema.pre('save', function(next) {
+    const currencySymbol = {
+        'NGN': '₦', 'USD': '$', 'EUR': '€', 'GBP': '£',
+        'KES': 'KSh', 'ZAR': 'R', 'AED': 'د.إ', 'GHS': '₵',
+        'XAF': 'CFA', 'XOF': 'CFA'
+    };
+    
+    if (this.isModified('price') || this.isModified('currency') || !this.formattedPrice) {
+        this.formattedPrice = `${currencySymbol[this.currency]}${this.price.toLocaleString()}`;
+    }
+    next();
 });
 
 const Item = mongoose.model("Item", ItemSchema);
@@ -149,21 +215,45 @@ app.post("/api/login", async (req, res) => {
         user: { _id: user._id, email: user.email, name: user.name }  // ✅ Ensure user._id is included
     });
 });
+
 app.post("/api/items/create", authenticate, upload.single("image"), async (req, res) => {
     try {
-        console.log("🔍 Received Data:", req.body);  // ✅ Debugging
-        console.log("🔍 Uploaded File:", req.file);  // ✅ Debugging file upload
+        console.log("🔍 Received Data:", req.body);
+        console.log("🔍 Uploaded File:", req.file);
 
-        const { name, price, category, location, anonymous } = req.body;
+        const { name, price, category, location, anonymous, currency = 'NGN' } = req.body;
+
+        // Validate currency
+        if (!currencySymbol[currency]) {
+            return res.status(400).json({ 
+                success: false, 
+                message: "Invalid currency selected" 
+            });
+        }
+
         if (!req.file) {
-            return res.status(400).json({ success: false, message: "Image upload failed." });
+            return res.status(400).json({ 
+                success: false, 
+                message: "Image upload failed." 
+            });
+        }
+
+        // Convert price to number and handle formatting
+        const numericPrice = parseFloat(price);
+        if (isNaN(numericPrice)) {
+            return res.status(400).json({ 
+                success: false, 
+                message: "Invalid price format" 
+            });
         }
 
         const imageUrl = req.file.path;
 
         const newItem = new Item({
             name,
-            price,
+            price: numericPrice,
+            currency, // Store the currency code
+            formattedPrice: `${currencySymbol[currency]}${numericPrice.toLocaleString()}`,
             category,
             location,
             imageUrl,
@@ -173,13 +263,28 @@ app.post("/api/items/create", authenticate, upload.single("image"), async (req, 
 
         await newItem.save();
         console.log("✅ Item Saved:", newItem);
-        res.json({ success: true, message: "Item created successfully!" });
+        
+        res.json({ 
+            success: true, 
+            message: "Item created successfully!",
+            item: {
+                ...newItem._doc,
+                price: numericPrice,
+                currency,
+                formattedPrice: `${currencySymbol[currency]}${numericPrice.toLocaleString()}`
+            }
+        });
 
     } catch (error) {
         console.error("❌ Error creating item:", error);
-        res.status(500).json({ success: false, message: "Server error", error: error.message });
+        res.status(500).json({ 
+            success: false, 
+            message: "Server error", 
+            error: error.message 
+        });
     }
 });
+
 // Fetch a Single Item by ID
 app.get("/api/items/:id", async (req, res) => {
     try {
