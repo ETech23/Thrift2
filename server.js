@@ -216,6 +216,10 @@ app.post("/api/login", async (req, res) => {
     });
 });
 
+
+// Import the currency constants
+const { currencySymbol } = require('./constants');
+
 app.post("/api/items/create", authenticate, upload.single("image"), async (req, res) => {
     try {
         console.log("🔍 Received Data:", req.body);
@@ -225,25 +229,24 @@ app.post("/api/items/create", authenticate, upload.single("image"), async (req, 
 
         // Validate currency
         if (!currencySymbol[currency]) {
-            return res.status(400).json({ 
-                success: false, 
-                message: "Invalid currency selected" 
+            return res.status(400).json({
+                success: false,
+                message: "Invalid currency selected"
             });
         }
 
         if (!req.file) {
-            return res.status(400).json({ 
-                success: false, 
-                message: "Image upload failed." 
+            return res.status(400).json({
+                success: false,
+                message: "Image upload failed."
             });
         }
 
-        // Convert price to number and handle formatting
         const numericPrice = parseFloat(price);
         if (isNaN(numericPrice)) {
-            return res.status(400).json({ 
-                success: false, 
-                message: "Invalid price format" 
+            return res.status(400).json({
+                success: false,
+                message: "Invalid price format"
             });
         }
 
@@ -252,35 +255,36 @@ app.post("/api/items/create", authenticate, upload.single("image"), async (req, 
         const newItem = new Item({
             name,
             price: numericPrice,
-            currency, // Store the currency code
-            formattedPrice: `${currencySymbol[currency]}${numericPrice.toLocaleString()}`,
+            currency,
             category,
             location,
             imageUrl,
             anonymous,
-            seller: req.userId
+            seller: req.userId,
+            postedBy: req.userId
         });
 
         await newItem.save();
         console.log("✅ Item Saved:", newItem);
-        
-        res.json({ 
-            success: true, 
+
+        // Format the response with the currency symbol
+        const formattedItem = {
+            ...newItem._doc,
+            formattedPrice: `${currencySymbol[currency]}${numericPrice.toLocaleString()}`
+        };
+
+        res.json({
+            success: true,
             message: "Item created successfully!",
-            item: {
-                ...newItem._doc,
-                price: numericPrice,
-                currency,
-                formattedPrice: `${currencySymbol[currency]}${numericPrice.toLocaleString()}`
-            }
+            item: formattedItem
         });
 
     } catch (error) {
         console.error("❌ Error creating item:", error);
-        res.status(500).json({ 
-            success: false, 
-            message: "Server error", 
-            error: error.message 
+        res.status(500).json({
+            success: false,
+            message: "Server error",
+            error: error.message
         });
     }
 });
