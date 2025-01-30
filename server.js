@@ -72,13 +72,13 @@ const ItemSchema = new mongoose.Schema({
         type: Number, 
         required: true 
     },
-    currency: { 
-        type: String, 
+    currency: {
+        type: String,
         required: true,
         default: 'NGN',
         enum: ['NGN', 'USD', 'EUR', 'GBP', 'KES', 'ZAR', 'AED', 'GHS', 'XAF', 'XOF']
     },
-    formattedPrice: { 
+    formattedPrice: {
         type: String,
         required: true
     },
@@ -108,34 +108,14 @@ const ItemSchema = new mongoose.Schema({
         ref: "User" 
     }
 }, {
-    timestamps: true,
-    toJSON: { 
-        virtuals: true,
-        transform: function(doc, ret) {
-            // Add formatted price if it doesn't exist
-            if (!ret.formattedPrice) {
-                const currencySymbol = {
-                    'NGN': '₦', 'USD': '$', 'EUR': '€', 'GBP': '£',
-                    'KES': 'KSh', 'ZAR': 'R', 'AED': 'د.إ', 'GHS': '₵',
-                    'XAF': 'CFA', 'XOF': 'CFA'
-                };
-                ret.formattedPrice = `${currencySymbol[ret.currency]}${ret.price.toLocaleString()}`;
-            }
-            return ret;
-        }
-    }
+    timestamps: true
 });
 
-// Pre-save middleware to ensure formattedPrice is set
+// Optional: Add a pre-save middleware to ensure formattedPrice is always set
 ItemSchema.pre('save', function(next) {
-    const currencySymbol = {
-        'NGN': '₦', 'USD': '$', 'EUR': '€', 'GBP': '£',
-        'KES': 'KSh', 'ZAR': 'R', 'AED': 'د.إ', 'GHS': '₵',
-        'XAF': 'CFA', 'XOF': 'CFA'
-    };
-    
     if (this.isModified('price') || this.isModified('currency') || !this.formattedPrice) {
-        this.formattedPrice = `${currencySymbol[this.currency]}${this.price.toLocaleString()}`;
+        const symbol = currencySymbol[this.currency] || '₦';
+        this.formattedPrice = `${symbol}${this.price.toLocaleString()}`;
     }
     next();
 });
@@ -252,10 +232,14 @@ app.post("/api/items/create", authenticate, upload.single("image"), async (req, 
 
         const imageUrl = req.file.path;
 
+        // Generate formatted price before creating the item
+        const formattedPrice = `${currencySymbol[currency]}${numericPrice.toLocaleString()}`;
+
         const newItem = new Item({
             name,
             price: numericPrice,
             currency,
+            formattedPrice, // Add this field
             category,
             location,
             imageUrl,
@@ -267,16 +251,10 @@ app.post("/api/items/create", authenticate, upload.single("image"), async (req, 
         await newItem.save();
         console.log("✅ Item Saved:", newItem);
 
-        // Format the response with the currency symbol
-        const formattedItem = {
-            ...newItem._doc,
-            formattedPrice: `${currencySymbol[currency]}${numericPrice.toLocaleString()}`
-        };
-
         res.json({
             success: true,
             message: "Item created successfully!",
-            item: formattedItem
+            item: newItem
         });
 
     } catch (error) {
