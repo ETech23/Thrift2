@@ -209,78 +209,88 @@ const postSchema = new mongoose.Schema({
 // Create the Post model
 const Post = mongoose.model("Post", postSchema);
 
-// Post creation endpoint
-app.post("/api/posts", authenticate, upload.array("media", 10), async (req, res) => {
-  try {
-    const { content } = req.body;
-    const mediaFiles = req.files;
-    const userId = req.userId;
+// Error handling middleware for multer
+const handleMulterError = (err, req, res, next) => {
+  if (err instanceof multer.MulterError) {
+    // A Multer error occurred when uploading
+    return res.status(400).json({
+      success: false,
+      message: 'File upload error',
+      error: err.message
+    });
+  } else if (err) {
+    // An unknown error occurred
+    return res.status(500).json({
+      success: false,
+      message: 'Error uploading file',
+      error: err.message
+    });
+  }
+  next();
+};
+app.post(
+  "/api/posts",
+  authenticate,
+  upload.array("media", 10),
+  handleMulterError,
+  async (req, res) => {
+    // Initialize mediaUrls array outside try block
+    let mediaUrls = [];
+    
+    try {
+      const { content } = req.body;
+      const mediaFiles = req.files;
+      const userId = req.userId;
 
-    // Input validation
-    if (!userId) {
-      return res.status(401).json({
-        success: false,
-        message: "Authentication failed - invalid or missing user ID",
-      });
-    }
-
-    if (!content && (!mediaFiles || mediaFiles.length === 0)) {
-      return res.status(400).json({
-        success: false,
-        message: "Post must contain either content or media files",
-      });
-    }
-
-    // Handle media files if present
-    const mediaUrls = [];
-    if (mediaFiles && mediaFiles.length > 0) {
-      // Validate file types
-      const validFileTypes = ["image/jpeg", "image/png", "image/gif", "video/mp4"];
-      const invalidFiles = mediaFiles.filter((file) => !validFileTypes.includes(file.mimetype));
-
-      if (invalidFiles.length > 0) {
-        return res.status(400).json({
+      // Input validation
+      if (!userId) {
+        return res.status(401).json({
           success: false,
-          message: "Invalid file type(s) detected. Supported formats: JPG, PNG, GIF, MP4",
-          invalidFiles: invalidFiles.map((f) => f.originalname),
+          message: "Authentication failed - invalid or missing user ID"
         });
       }
 
-      // Upload to Cloudinary
-      for (const file of mediaFiles) {
-        try {
-          const result = await cloudinary.uploader.upload(file.path, {
-            folder: "marketplace_posts",
-            resource_type: "auto",
-          });
+      if (!content && (!mediaFiles || mediaFiles.length === 0)) {
+        return res.status(400).json({
+          success: false,
+          message: "Post must contain either content or media files"
+        });
+      }
 
-          mediaUrls.push({
-            url: result.secure_url,
-            type: result.resource_type,
-            publicId: result.public_id,
-          });
-        } catch (cloudinaryError) {
-          // Clean up any successfully uploaded files
-          for (const media of mediaUrls) {
-            await cloudinary.uploader.destroy(media.publicId).catch(console.error);
+      // Handle media files if present
+      if (mediaFiles && mediaFiles.length > 0) {
+        // Upload to Cloudinary
+        for (const file of mediaFiles) {
+          try {
+            const result = await cloudinary.uploader.upload(file.path, {
+              folder: "marketplace_posts",
+              resource_type: "auto"
+            });
+            
+            mediaUrls.push({
+              url: result.secure_url,
+              type: result.resource_type,
+              publicId: result.public_id
+            });
+          } catch (cloudinaryError) {
+            // Clean up any successfully uploaded files
+            await Promise.all(
+              mediaUrls.map(media => 
+                cloudinary.uploader.destroy(media.publicId)
+                  .catch(console.error)
+              )
+            );
+
+            throw new Error(`Media upload failed: ${cloudinaryError.message}`);
           }
-
-          return res.status(500).json({
-            success: false,
-            message: "Media upload failed",
-            error: cloudinaryError.message,
-            failedFile: file.originalname,
-          });
         }
       }
-    }
 
-    // Create and save the post
-    try {
+      // Create and save the post
       const newPost = new Post({
         content,
         media: mediaUrls,
-        user: userId,
+        user: userId
       });
 
       await newPost.save();
@@ -294,41 +304,39 @@ app.post("/api/posts", authenticate, upload.array("media", 10), async (req, res)
       return res.status(201).json({
         success: true,
         message: "Post created successfully",
-        post: newPost,
+        post: newPost
       });
-    } catch (dbError) {
-      // Clean up Cloudinary files if database save fails
-      for (const media of mediaUrls) {
-        await cloudinary.uploader.destroy(media.publicId).catch(console.error);
-      }
+
+    } catch (error) {
+      // Clean up any uploaded files if an error occurs
+      await Promise.all(
+        mediaUrls.map(media => 
+          cloudinary.uploader.destroy(media.publicId)
+            .catch(console.error)
+        )
+      );
 
       return res.status(500).json({
         success: false,
-        message: "Failed to save post to database",
-        error: dbError.message,
+        message: "An error occurred while creating the post",
+        error: error.message,
+        stack: process.env.NODE_ENV === "development" ? error.stack : undefined
       });
-    }
-  } catch (error) {
-    return res.status(500).json({
-      success: false,
-      message: "An unexpected error occurred while creating the post",
-      error: error.message,
-      stack: process.env.NODE_ENV === "development" ? error.stack : undefined,
-    });
-  } finally {
-    // Clean up temporary files
-    if (req.files) {
-      req.files.forEach((file) => {
-        try {
-          fs.unlinkSync(file.path);
-        } catch (error) {
-          console.error(`Failed to delete temporary file ${file.path}:`, error);
-        }
-      });
+
+    } finally {
+      // Clean up temporary files
+      if (req.files) {
+        req.files.forEach(file => {
+          try {
+            fs.unlinkSync(file.path);
+          } catch (error) {
+            console.error(`Failed to delete temporary file ${file.path}:`, error);
+          }
+        });
+      }
     }
   }
-});
-
+);
 // Fetch all posts endpoint
 app.get("/api/posts", async (req, res) => {
   try {
