@@ -25,7 +25,7 @@ const io = new Server(server, {
 const FRONTEND_URL = process.env.FRONTEND_URL || "http://localhost:5000";
 
 app.use(cors({
-    origin: "https://thrift-a.vercel.app", // Allow only this frontend
+	origin: "https://thrift-a.vercel.app", // Allow only this frontend
     credentials: true,    // Allow cookies (if needed)
 }));
 
@@ -157,52 +157,142 @@ const authenticate = (req, res, next) => {
     }
 };
 
+
 app.post("/api/posts", authenticate, upload.array("media", 10), async (req, res) => {
     try {
-        const { content } = req.body; // Get content from the request body
-        const mediaFiles = req.files; // Get uploaded media files
-        const userId = req.userId; // Get user ID from authentication middleware
+        const { content } = req.body;
+        const mediaFiles = req.files;
+        const userId = req.userId;
 
-        // Validate input
+        // Input validation with specific error messages
+        if (!userId) {
+            return res.status(401).json({
+                success: false,
+                message: "Authentication failed - invalid or missing user ID"
+            });
+        }
+
         if (!content && (!mediaFiles || mediaFiles.length === 0)) {
-            return res.status(400).json({ success: false, message: "Please provide content or upload media." });
+            return res.status(400).json({
+                success: false,
+                message: "Post must contain either content or media files"
+            });
         }
 
-        // Upload media files to Cloudinary
+        // Validate media files if present
+        if (mediaFiles && mediaFiles.length > 0) {
+            const validFileTypes = ['image/jpeg', 'image/png', 'image/gif', 'video/mp4'];
+            const invalidFiles = mediaFiles.filter(file => !validFileTypes.includes(file.mimetype));
+            
+            if (invalidFiles.length > 0) {
+                return res.status(400).json({
+                    success: false,
+                    message: "Invalid file type(s) detected. Supported formats: JPG, PNG, GIF, MP4",
+                    invalidFiles: invalidFiles.map(f => f.originalname)
+                });
+            }
+
+            if (mediaFiles.length > 10) {
+                return res.status(400).json({
+                    success: false,
+                    message: "Maximum of 10 media files allowed per post"
+                });
+            }
+        }
+
+        // Upload media files to Cloudinary with detailed error handling
         const mediaUrls = [];
-        for (const file of mediaFiles) {
-            const result = await cloudinary.uploader.upload(file.path, {
-                folder: "marketplace_posts", // Folder in Cloudinary
-                resource_type: "auto", // Automatically detect if it's an image or video
-            });
-
-            mediaUrls.push({
-                url: result.secure_url, // Cloudinary URL
-                type: result.resource_type, // "image" or "video"
-            });
+        if (mediaFiles && mediaFiles.length > 0) {
+            for (const file of mediaFiles) {
+                try {
+                    const result = await cloudinary.uploader.upload(file.path, {
+                        folder: "marketplace_posts",
+                        resource_type: "auto",
+                    });
+                    
+                    mediaUrls.push({
+                        url: result.secure_url,
+                        type: result.resource_type,
+                        publicId: result.public_id
+                    });
+                } catch (cloudinaryError) {
+                    // Clean up any successfully uploaded files
+                    for (const media of mediaUrls) {
+                        await cloudinary.uploader.destroy(media.publicId).catch(console.error);
+                    }
+                    
+                    return res.status(500).json({
+                        success: false,
+                        message: "Media upload failed",
+                        error: cloudinaryError.message,
+                        failedFile: file.originalname
+                    });
+                }
+            }
         }
 
-        // Create a new post in MongoDB
+        // Create post in MongoDB with error handling
         const newPost = new Post({
             content,
             media: mediaUrls,
-            user: userId, // Associate the post with the user
+            user: userId,
+            createdAt: new Date()
         });
 
-        await newPost.save();
+        try {
+            await newPost.save();
+        } catch (dbError) {
+            // Clean up Cloudinary files if database save fails
+            for (const media of mediaUrls) {
+                await cloudinary.uploader.destroy(media.publicId).catch(console.error);
+            }
+            
+            return res.status(500).json({
+                success: false,
+                message: "Failed to save post to database",
+                error: dbError.message
+            });
+        }
 
-        // Emit a Socket.io event to notify clients about the new post
-        const io = req.app.get("io"); // Access `io` from the app object
-        io.emit("newPost", newPost);
+        // Emit Socket.io event with error handling
+        try {
+            const io = req.app.get("io");
+            if (io) {
+                io.emit("newPost", newPost);
+            }
+        } catch (socketError) {
+            console.error("Socket emission failed:", socketError);
+            // Don't return error here as post was already saved successfully
+        }
 
-        // Return the created post
-        res.status(201).json({ success: true, post: newPost });
+        // Return success response with created post
+        return res.status(201).json({
+            success: true,
+            message: "Post created successfully",
+            post: newPost
+        });
+
     } catch (error) {
-        console.error("Error creating post:", error);
-        res.status(500).json({ success: false, message: "Failed to create post." });
+        // General error handler for unexpected errors
+        return res.status(500).json({
+            success: false,
+            message: "An unexpected error occurred while creating the post",
+            error: error.message,
+            stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+        });
+    } finally {
+        // Clean up temporary files if they exist
+        if (req.files) {
+            req.files.forEach(file => {
+                try {
+                    fs.unlinkSync(file.path);
+                } catch (error) {
+                    console.error(`Failed to delete temporary file ${file.path}:`, error);
+                }
+            });
+        }
     }
 });
-
 // User Registration
 app.post("/api/register", async (req, res) => {
     try {
