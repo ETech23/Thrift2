@@ -143,6 +143,23 @@ const MessageSchema = new mongoose.Schema({
 
 const Message = mongoose.model("Message", MessageSchema);
 
+
+// Middleware to Verify Token
+const authenticate = (req, res, next) => {
+    const token = req.headers.authorization;
+    if (!token) return res.status(401).json({ success: false, message: "Unauthorized" });
+
+    try {
+        const decoded = jwt.verify(token.split(" ")[1], process.env.JWT_SECRET);
+        req.userId = decoded.userId;
+        next();
+    } catch {
+        res.status(401).json({ success: false, message: "Invalid token" });
+    }
+};
+
+
+// Define the Post Schema
 const postSchema = new mongoose.Schema({
     content: {
         type: String,
@@ -177,28 +194,14 @@ const postSchema = new mongoose.Schema({
 // Create the Post model
 const Post = mongoose.model('Post', postSchema);
 
-// Middleware to Verify Token
-const authenticate = (req, res, next) => {
-    const token = req.headers.authorization;
-    if (!token) return res.status(401).json({ success: false, message: "Unauthorized" });
-
-    try {
-        const decoded = jwt.verify(token.split(" ")[1], process.env.JWT_SECRET);
-        req.userId = decoded.userId;
-        next();
-    } catch {
-        res.status(401).json({ success: false, message: "Invalid token" });
-    }
-};
-
-
+// Post creation endpoint
 app.post("/api/posts", authenticate, upload.array("media", 10), async (req, res) => {
     try {
         const { content } = req.body;
         const mediaFiles = req.files;
         const userId = req.userId;
 
-        // Input validation with specific error messages
+        // Input validation
         if (!userId) {
             return res.status(401).json({
                 success: false,
@@ -213,8 +216,10 @@ app.post("/api/posts", authenticate, upload.array("media", 10), async (req, res)
             });
         }
 
-        // Validate media files if present
+        // Handle media files if present
+        const mediaUrls = [];
         if (mediaFiles && mediaFiles.length > 0) {
+            // Validate file types
             const validFileTypes = ['image/jpeg', 'image/png', 'image/gif', 'video/mp4'];
             const invalidFiles = mediaFiles.filter(file => !validFileTypes.includes(file.mimetype));
             
@@ -226,17 +231,7 @@ app.post("/api/posts", authenticate, upload.array("media", 10), async (req, res)
                 });
             }
 
-            if (mediaFiles.length > 10) {
-                return res.status(400).json({
-                    success: false,
-                    message: "Maximum of 10 media files allowed per post"
-                });
-            }
-        }
-
-        // Upload media files to Cloudinary with detailed error handling
-        const mediaUrls = [];
-        if (mediaFiles && mediaFiles.length > 0) {
+            // Upload to Cloudinary
             for (const file of mediaFiles) {
                 try {
                     const result = await cloudinary.uploader.upload(file.path, {
@@ -265,16 +260,28 @@ app.post("/api/posts", authenticate, upload.array("media", 10), async (req, res)
             }
         }
 
-        // Create post in MongoDB with error handling
-        const newPost = new Post({
-            content,
-            media: mediaUrls,
-            user: userId,
-            createdAt: new Date()
-        });
-
+        // Create and save the post
         try {
+            const newPost = new Post({
+                content,
+                media: mediaUrls,
+                user: userId,
+            });
+
             await newPost.save();
+
+            // Emit Socket.io event if available
+            const io = req.app.get("io");
+            if (io) {
+                io.emit("newPost", newPost);
+            }
+
+            return res.status(201).json({
+                success: true,
+                message: "Post created successfully",
+                post: newPost
+            });
+
         } catch (dbError) {
             // Clean up Cloudinary files if database save fails
             for (const media of mediaUrls) {
@@ -288,26 +295,7 @@ app.post("/api/posts", authenticate, upload.array("media", 10), async (req, res)
             });
         }
 
-        // Emit Socket.io event with error handling
-        try {
-            const io = req.app.get("io");
-            if (io) {
-                io.emit("newPost", newPost);
-            }
-        } catch (socketError) {
-            console.error("Socket emission failed:", socketError);
-            // Don't return error here as post was already saved successfully
-        }
-
-        // Return success response with created post
-        return res.status(201).json({
-            success: true,
-            message: "Post created successfully",
-            post: newPost
-        });
-
     } catch (error) {
-        // General error handler for unexpected errors
         return res.status(500).json({
             success: false,
             message: "An unexpected error occurred while creating the post",
@@ -315,7 +303,7 @@ app.post("/api/posts", authenticate, upload.array("media", 10), async (req, res)
             stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
         });
     } finally {
-        // Clean up temporary files if they exist
+        // Clean up temporary files
         if (req.files) {
             req.files.forEach(file => {
                 try {
@@ -327,6 +315,7 @@ app.post("/api/posts", authenticate, upload.array("media", 10), async (req, res)
         }
     }
 });
+
 // User Registration
 app.post("/api/register", async (req, res) => {
     try {
