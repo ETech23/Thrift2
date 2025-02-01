@@ -143,6 +143,40 @@ const MessageSchema = new mongoose.Schema({
 
 const Message = mongoose.model("Message", MessageSchema);
 
+const postSchema = new mongoose.Schema({
+    content: {
+        type: String,
+        required: false // Not required if media is present
+    },
+    media: [{
+        url: {
+            type: String,
+            required: true
+        },
+        type: {
+            type: String,
+            enum: ['image', 'video'],
+            required: true
+        },
+        publicId: {
+            type: String,
+            required: true
+        }
+    }],
+    user: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'User',
+        required: true
+    },
+    createdAt: {
+        type: Date,
+        default: Date.now
+    }
+});
+
+// Create the Post model
+const Post = mongoose.model('Post', postSchema);
+
 // Middleware to Verify Token
 const authenticate = (req, res, next) => {
     const token = req.headers.authorization;
