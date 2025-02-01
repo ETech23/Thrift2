@@ -18,7 +18,7 @@ app.use(express.json());
 // Create HTTP server for Socket.io
 const server = http.createServer(app);
 const io = new Server(server, {
-    cors: { origin: "*" }
+    cors: { origin: "https://thrift-a.vercel.app" }
 });
 
 // Allow Frontend URL to Access Backend
@@ -61,20 +61,17 @@ const UserSchema = new mongoose.Schema({
 });
 
 const User = mongoose.model("User", UserSchema);
-// Post Schema
-const PostSchema = new mongoose.Schema({
-    content: { type: String, required: true }, // Post content (text)
-    media: [ // Array of media objects (photos/videos)
-        {
-            url: { type: String, required: true }, // Cloudinary URL
-            type: { type: String, required: true }, // "image" or "video"
-        },
-    ],
-    user: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true }, // Reference to the user who created the post
-    timestamp: { type: Date, default: Date.now }, // Timestamp of the post
-});
 
-const Post = mongoose.model("Post", PostSchema);
+
+app.get("/api/posts", async (req, res) => {
+    try {
+        const posts = await Post.find().populate("user", "username email"); // Fetch posts
+        res.status(200).json({ success: true, posts });
+    } catch (error) {
+        console.error("Error fetching posts:", error);
+        res.status(500).json({ success: false, message: "Failed to fetch posts." });
+    }
+});
 
 // Item Schema
 const ItemSchema = new mongoose.Schema({
@@ -159,6 +156,52 @@ const authenticate = (req, res, next) => {
         res.status(401).json({ success: false, message: "Invalid token" });
     }
 };
+
+app.post("/api/posts", authenticate, upload.array("media", 10), async (req, res) => {
+    try {
+        const { content } = req.body; // Get content from the request body
+        const mediaFiles = req.files; // Get uploaded media files
+        const userId = req.userId; // Get user ID from authentication middleware
+
+        // Validate input
+        if (!content && (!mediaFiles || mediaFiles.length === 0)) {
+            return res.status(400).json({ success: false, message: "Please provide content or upload media." });
+        }
+
+        // Upload media files to Cloudinary
+        const mediaUrls = [];
+        for (const file of mediaFiles) {
+            const result = await cloudinary.uploader.upload(file.path, {
+                folder: "marketplace_posts", // Folder in Cloudinary
+                resource_type: "auto", // Automatically detect if it's an image or video
+            });
+
+            mediaUrls.push({
+                url: result.secure_url, // Cloudinary URL
+                type: result.resource_type, // "image" or "video"
+            });
+        }
+
+        // Create a new post in MongoDB
+        const newPost = new Post({
+            content,
+            media: mediaUrls,
+            user: userId, // Associate the post with the user
+        });
+
+        await newPost.save();
+
+        // Emit a Socket.io event to notify clients about the new post
+        const io = req.app.get("io"); // Access `io` from the app object
+        io.emit("newPost", newPost);
+
+        // Return the created post
+        res.status(201).json({ success: true, post: newPost });
+    } catch (error) {
+        console.error("Error creating post:", error);
+        res.status(500).json({ success: false, message: "Failed to create post." });
+    }
+});
 
 // User Registration
 app.post("/api/register", async (req, res) => {
