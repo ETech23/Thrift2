@@ -45,7 +45,6 @@ const storage = new CloudinaryStorage({
     cloudinary,
     params: { folder: "marketplace_items", allowed_formats: ["jpg", "png", "jpeg"] },
 });
-const upload = multer({ storage });
 
 // Test route
 app.get("/api/test", (req, res) => {
@@ -158,162 +157,197 @@ const authenticate = (req, res, next) => {
     }
 };
 
+const fileFilter = (req, file, cb) => {
+  const allowedTypes = ["image/jpeg", "image/png", "image/gif", "video/mp4"];
+  if (allowedTypes.includes(file.mimetype)) {
+    cb(null, true);
+  } else {
+    cb(new Error("Invalid file type. Only JPG, PNG, GIF, and MP4 are allowed."), false);
+  }
+};
+
+const upload = multer({
+  storage,
+  fileFilter,
+  limits: { fileSize: 50 * 1024 * 1024 }, // Limit file size to 100MB
+});
 
 // Define the Post Schema
 const postSchema = new mongoose.Schema({
-    content: {
+  content: {
+    type: String,
+    required: false, // Not required if media is present
+  },
+  media: [
+    {
+      url: {
         type: String,
-        required: false // Not required if media is present
+        required: true,
+      },
+      type: {
+        type: String,
+        enum: ["image", "video"],
+        required: true,
+      },
+      publicId: {
+        type: String,
+        required: true,
+      },
     },
-    media: [{
-        url: {
-            type: String,
-            required: true
-        },
-        type: {
-            type: String,
-            enum: ['image', 'video'],
-            required: true
-        },
-        publicId: {
-            type: String,
-            required: true
-        }
-    }],
-    user: {
-        type: mongoose.Schema.Types.ObjectId,
-        ref: 'User',
-        required: true
-    },
-    createdAt: {
-        type: Date,
-        default: Date.now
-    }
+  ],
+  user: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: "User",
+    required: true,
+  },
+  createdAt: {
+    type: Date,
+    default: Date.now,
+  },
 });
 
 // Create the Post model
-const Post = mongoose.model('Post', postSchema);
+const Post = mongoose.model("Post", postSchema);
 
 // Post creation endpoint
 app.post("/api/posts", authenticate, upload.array("media", 10), async (req, res) => {
-    try {
-        const { content } = req.body;
-        const mediaFiles = req.files;
-        const userId = req.userId;
+  try {
+    const { content } = req.body;
+    const mediaFiles = req.files;
+    const userId = req.userId;
 
-        // Input validation
-        if (!userId) {
-            return res.status(401).json({
-                success: false,
-                message: "Authentication failed - invalid or missing user ID"
-            });
-        }
-
-        if (!content && (!mediaFiles || mediaFiles.length === 0)) {
-            return res.status(400).json({
-                success: false,
-                message: "Post must contain either content or media files"
-            });
-        }
-
-        // Handle media files if present
-        const mediaUrls = [];
-        if (mediaFiles && mediaFiles.length > 0) {
-            // Validate file types
-            const validFileTypes = ['image/jpeg', 'image/png', 'image/gif', 'video/mp4'];
-            const invalidFiles = mediaFiles.filter(file => !validFileTypes.includes(file.mimetype));
-            
-            if (invalidFiles.length > 0) {
-                return res.status(400).json({
-                    success: false,
-                    message: "Invalid file type(s) detected. Supported formats: JPG, PNG, GIF, MP4",
-                    invalidFiles: invalidFiles.map(f => f.originalname)
-                });
-            }
-
-            // Upload to Cloudinary
-            for (const file of mediaFiles) {
-                try {
-                    const result = await cloudinary.uploader.upload(file.path, {
-                        folder: "marketplace_posts",
-                        resource_type: "auto",
-                    });
-                    
-                    mediaUrls.push({
-                        url: result.secure_url,
-                        type: result.resource_type,
-                        publicId: result.public_id
-                    });
-                } catch (cloudinaryError) {
-                    // Clean up any successfully uploaded files
-                    for (const media of mediaUrls) {
-                        await cloudinary.uploader.destroy(media.publicId).catch(console.error);
-                    }
-                    
-                    return res.status(500).json({
-                        success: false,
-                        message: "Media upload failed",
-                        error: cloudinaryError.message,
-                        failedFile: file.originalname
-                    });
-                }
-            }
-        }
-
-        // Create and save the post
-        try {
-            const newPost = new Post({
-                content,
-                media: mediaUrls,
-                user: userId,
-            });
-
-            await newPost.save();
-
-            // Emit Socket.io event if available
-            const io = req.app.get("io");
-            if (io) {
-                io.emit("newPost", newPost);
-            }
-
-            return res.status(201).json({
-                success: true,
-                message: "Post created successfully",
-                post: newPost
-            });
-
-        } catch (dbError) {
-            // Clean up Cloudinary files if database save fails
-            for (const media of mediaUrls) {
-                await cloudinary.uploader.destroy(media.publicId).catch(console.error);
-            }
-            
-            return res.status(500).json({
-                success: false,
-                message: "Failed to save post to database",
-                error: dbError.message
-            });
-        }
-
-    } catch (error) {
-        return res.status(500).json({
-            success: false,
-            message: "An unexpected error occurred while creating the post",
-            error: error.message,
-            stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
-        });
-    } finally {
-        // Clean up temporary files
-        if (req.files) {
-            req.files.forEach(file => {
-                try {
-                    fs.unlinkSync(file.path);
-                } catch (error) {
-                    console.error(`Failed to delete temporary file ${file.path}:`, error);
-                }
-            });
-        }
+    // Input validation
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        message: "Authentication failed - invalid or missing user ID",
+      });
     }
+
+    if (!content && (!mediaFiles || mediaFiles.length === 0)) {
+      return res.status(400).json({
+        success: false,
+        message: "Post must contain either content or media files",
+      });
+    }
+
+    // Handle media files if present
+    const mediaUrls = [];
+    if (mediaFiles && mediaFiles.length > 0) {
+      // Validate file types
+      const validFileTypes = ["image/jpeg", "image/png", "image/gif", "video/mp4"];
+      const invalidFiles = mediaFiles.filter((file) => !validFileTypes.includes(file.mimetype));
+
+      if (invalidFiles.length > 0) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid file type(s) detected. Supported formats: JPG, PNG, GIF, MP4",
+          invalidFiles: invalidFiles.map((f) => f.originalname),
+        });
+      }
+
+      // Upload to Cloudinary
+      for (const file of mediaFiles) {
+        try {
+          const result = await cloudinary.uploader.upload(file.path, {
+            folder: "marketplace_posts",
+            resource_type: "auto",
+          });
+
+          mediaUrls.push({
+            url: result.secure_url,
+            type: result.resource_type,
+            publicId: result.public_id,
+          });
+        } catch (cloudinaryError) {
+          // Clean up any successfully uploaded files
+          for (const media of mediaUrls) {
+            await cloudinary.uploader.destroy(media.publicId).catch(console.error);
+          }
+
+          return res.status(500).json({
+            success: false,
+            message: "Media upload failed",
+            error: cloudinaryError.message,
+            failedFile: file.originalname,
+          });
+        }
+      }
+    }
+
+    // Create and save the post
+    try {
+      const newPost = new Post({
+        content,
+        media: mediaUrls,
+        user: userId,
+      });
+
+      await newPost.save();
+
+      // Emit Socket.io event if available
+      const io = req.app.get("io");
+      if (io) {
+        io.emit("newPost", newPost);
+      }
+
+      return res.status(201).json({
+        success: true,
+        message: "Post created successfully",
+        post: newPost,
+      });
+    } catch (dbError) {
+      // Clean up Cloudinary files if database save fails
+      for (const media of mediaUrls) {
+        await cloudinary.uploader.destroy(media.publicId).catch(console.error);
+      }
+
+      return res.status(500).json({
+        success: false,
+        message: "Failed to save post to database",
+        error: dbError.message,
+      });
+    }
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      message: "An unexpected error occurred while creating the post",
+      error: error.message,
+      stack: process.env.NODE_ENV === "development" ? error.stack : undefined,
+    });
+  } finally {
+    // Clean up temporary files
+    if (req.files) {
+      req.files.forEach((file) => {
+        try {
+          fs.unlinkSync(file.path);
+        } catch (error) {
+          console.error(`Failed to delete temporary file ${file.path}:`, error);
+        }
+      });
+    }
+  }
+});
+
+// Fetch all posts endpoint
+app.get("/api/posts", async (req, res) => {
+  try {
+    const posts = await Post.find()
+      .populate("user", "name avatar") // Populate user details
+      .sort({ createdAt: -1 }); // Sort by latest posts first
+
+    return res.status(200).json({
+      success: true,
+      message: "Posts fetched successfully",
+      posts,
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      message: "Failed to fetch posts",
+      error: error.message,
+    });
+  }
 });
 
 // User Registration
