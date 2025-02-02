@@ -10,12 +10,15 @@ const cloudinary = require("cloudinary").v2;
 const http = require("http");
 const { Server } = require("socket.io");
 const router = express.Router();
-
+const fs = require('fs').promises;
+const path = require('path');
 
 // Initialize Express
 const app = express();
 app.use(cors());
 app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
+
 
 // Create HTTP server for Socket.io
 const server = http.createServer(app);
