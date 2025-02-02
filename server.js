@@ -9,6 +9,8 @@ const { CloudinaryStorage } = require("multer-storage-cloudinary");
 const cloudinary = require("cloudinary").v2;
 const http = require("http");
 const { Server } = require("socket.io");
+const router = express.Router();
+
 
 // Initialize Express
 const app = express();
@@ -34,11 +36,11 @@ app.use(cors({
 mongoose.connect(process.env.MONGO_URI,).then(() => console.log("✅ MongoDB Connected")).catch(err => console.log("❌ MongoDB Error:", err));
 
 // Configure Cloudinary
-cloudinary.config({
+/**cloudinary.config({
     cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
     api_key: process.env.CLOUDINARY_API_KEY,
     api_secret: process.env.CLOUDINARY_API_SECRET
-});
+});**/
 
 // Cloudinary Image Upload Setup 
 /**
@@ -202,7 +204,7 @@ if (!fs.existsSync(uploadDir)) {
 }
 
 // Configure Multer
-const storage = multer.diskStorage({
+/** const storage = multer.diskStorage({
   destination: function(req, file, cb) {
     cb(null, uploadDir);
   },
@@ -211,9 +213,9 @@ const storage = multer.diskStorage({
     cb(null, uniqueSuffix + path.extname(file.originalname));
   }
 });
-
+**/
 // File filter
-const fileFilter = function(req, file, cb) {
+/**const fileFilter = function(req, file, cb) {
   const allowedTypes = [
     'image/jpeg',
     'image/jpg',
@@ -228,7 +230,42 @@ const fileFilter = function(req, file, cb) {
     cb(new Error('Invalid file type. Only JPEG, PNG, GIF and MP4 are allowed.'), false);
   }
 };
+**/
 
+// Multer configuration
+const storage = multer.diskStorage({
+    destination: async function(req, file, cb) {
+        const uploadDir = './uploads';
+        try {
+            await fs.mkdir(uploadDir, { recursive: true });
+            cb(null, uploadDir);
+        } catch (error) {
+            cb(error);
+        }
+    },
+    filename: function(req, file, cb) {
+        const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+        cb(null, file.fieldname + '-' + uniqueSuffix + path.extname(file.originalname));
+    }
+});
+
+
+
+const fileFilter = (req, file, cb) => {
+    const allowedTypes = [
+        'image/jpeg',
+        'image/jpg',
+        'image/png',
+        'image/gif',
+        'video/mp4'
+    ];
+
+    if (allowedTypes.includes(file.mimetype)) {
+        cb(null, true);
+    } else {
+        cb(new Error(`Invalid file type: ${file.mimetype}. Only JPEG, PNG, GIF and MP4 are allowed.`));
+    }
+};
 // Initialize Multer
 const uploadMiddleware = multer({
   storage: storage,
@@ -238,128 +275,185 @@ const uploadMiddleware = multer({
     files: 10 // Maximum number of files
   }
 });
-
-// Post creation route
-app.post('/api/posts', 
-  authenticate, // Your authentication middleware
-  uploadMiddleware.array('media', 10), // Use the initialized Multer instance
-  async (req, res) => {
-    let mediaUrls = [];
-    
-    try {
-      // Log received data
-      console.log('Files:', req.files);
-      console.log('Body:', req.body);
-
-      const { content } = req.body;
-      const mediaFiles = req.files;
-      const userId = req.userId;
-
-      // Validate input
-      if (!content && (!mediaFiles || mediaFiles.length === 0)) {
-        return res.status(400).json({
-          success: false,
-          message: "Post must contain either content or media files"
-        });
-      }
-
-      // Handle media files
-      if (mediaFiles && mediaFiles.length > 0) {
-        for (const file of mediaFiles) {
-          try {
-            const result = await cloudinary.uploader.upload(file.path, {
-              folder: "marketplace_posts",
-              resource_type: "auto"
-            });
-
-            mediaUrls.push({
-              url: result.secure_url,
-              type: result.resource_type,
-              publicId: result.public_id
-            });
-          } catch (uploadError) {
-            // Clean up any uploaded files on error
-            for (const media of mediaUrls) {
-              await cloudinary.uploader.destroy(media.publicId).catch(console.error);
-            }
-            throw new Error(`Failed to upload ${file.originalname}: ${uploadError.message}`);
-          }
-        }
-      }
-
-      // Create post
-      const newPost = new Post({
-        content,
-        media: mediaUrls,
-        user: userId
-      });
-
-      await newPost.save();
-
-      // Clean up temp files
-      if (mediaFiles) {
-        mediaFiles.forEach(file => {
-          fs.unlink(file.path, err => {
-            if (err) console.error('Error deleting temp file:', err);
-          });
-        });
-      }
-
-      return res.status(201).json({
-        success: true,
-        message: "Post created successfully",
-        post: newPost
-      });
-
-    } catch (error) {
-      console.error('Error creating post:', error);
-
-      // Clean up any cloudinary uploads if post creation failed
-      for (const media of mediaUrls) {
-        await cloudinary.uploader.destroy(media.publicId).catch(console.error);
-      }
-
-      // Clean up temp files
-      if (req.files) {
-        req.files.forEach(file => {
-          fs.unlink(file.path, err => {
-            if (err) console.error('Error deleting temp file:', err);
-          });
-        });
-      }
-
-      return res.status(500).json({
-        success: false,
-        message: "Failed to create post",
-        error: error.message
-      });
+const upload = multer({
+    storage,
+    fileFilter,
+    limits: {
+        fileSize: 10 * 1024 * 1024, // 10MB
+        files: 10
     }
-  }
+});
+
+// Cloudinary configuration validation
+if (!process.env.CLOUDINARY_CLOUD_NAME || 
+    !process.env.CLOUDINARY_API_KEY || 
+    !process.env.CLOUDINARY_API_SECRET) {
+    throw new Error('Missing required Cloudinary configuration');
+}
+
+// Configure Cloudinary
+cloudinary.config({
+    cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+    api_key: process.env.CLOUDINARY_API_KEY,
+    api_secret: process.env.CLOUDINARY_API_SECRET
+});
+
+
+
+
+// Utility function to clean up uploaded files
+async function cleanupFiles(files) {
+    if (!files) return;
+    
+    for (const file of files) {
+        try {
+            await fs.unlink(file.path);
+        } catch (error) {
+            console.error(`Failed to delete temporary file ${file.path}:`, error);
+        }
+    }
+}
+
+// Utility function to clean up Cloudinary uploads
+async function cleanupCloudinaryUploads(mediaUrls) {
+    if (!mediaUrls || !mediaUrls.length) return;
+    
+    for (const media of mediaUrls) {
+        try {
+            await cloudinary.uploader.destroy(media.publicId);
+        } catch (error) {
+            console.error(`Failed to delete Cloudinary resource ${media.publicId}:`, error);
+        }
+    }
+}
+
+router.post('/posts', 
+    authenticate, 
+    upload.array('media', 10),
+    async (req, res) => {
+        const mediaUrls = [];
+        const startTime = Date.now();
+        
+        try {
+            // Log request details
+            console.log(`[${startTime}] Post creation request received`);
+            console.log('User ID:', req.userId);
+            console.log('Content:', req.body.content);
+            console.log('Files count:', req.files?.length || 0);
+
+            // Input validation
+            if (!req.body.content && (!req.files || req.files.length === 0)) {
+                throw new Error('Post must contain either content or media files');
+            }
+
+            // Handle media uploads
+            if (req.files && req.files.length > 0) {
+                for (const file of req.files) {
+                    try {
+                        console.log(`Uploading file: ${file.originalname}`);
+                        const result = await cloudinary.uploader.upload(file.path, {
+                            folder: 'marketplace_posts',
+                            resource_type: 'auto',
+                            timeout: 60000 // 60 seconds timeout
+                        });
+
+                        mediaUrls.push({
+                            url: result.secure_url,
+                            type: result.resource_type === 'video' ? 'video' : 'image',
+                            publicId: result.public_id
+                        });
+                    } catch (uploadError) {
+                        console.error(`Failed to upload ${file.originalname}:`, uploadError);
+                        await cleanupCloudinaryUploads(mediaUrls);
+                        throw new Error(`Failed to upload ${file.originalname}: ${uploadError.message}`);
+                    }
+                }
+            }
+
+            // Create and save post
+            const post = new Post({
+                content: req.body.content,
+                media: mediaUrls,
+                user: req.userId
+            });
+
+            await post.save();
+
+            // Clean up temporary files
+            await cleanupFiles(req.files);
+
+            const duration = Date.now() - startTime;
+            console.log(`[${startTime}] Post creation completed in ${duration}ms`);
+
+            return res.status(201).json({
+                success: true,
+                message: 'Post created successfully',
+                post: await post.populate('user', 'username avatar')
+            });
+
+        } catch (error) {
+            const duration = Date.now() - startTime;
+            console.error(`[${startTime}] Post creation failed after ${duration}ms:`, error);
+
+            // Clean up on failure
+            await cleanupCloudinaryUploads(mediaUrls);
+            await cleanupFiles(req.files);
+
+            // Determine appropriate error status and message
+            let statusCode = 500;
+            let errorMessage = 'An unexpected error occurred while creating the post';
+
+            if (error.message.includes('must contain either content or media')) {
+                statusCode = 400;
+                errorMessage = error.message;
+            } else if (error.name === 'ValidationError') {
+                statusCode = 400;
+                errorMessage = 'Invalid post data provided';
+            }
+
+            return res.status(statusCode).json({
+                success: false,
+                message: errorMessage,
+                error: process.env.NODE_ENV === 'development' ? error.message : undefined
+            });
+        }
+    }
 );
 
 // Error handling middleware
-app.use((error, req, res, next) => {
-  if (error instanceof multer.MulterError) {
-    if (error.code === 'LIMIT_FILE_SIZE') {
-      return res.status(400).json({
-        success: false,
-        message: 'File is too large. Maximum size is 10MB'
-      });
+router.use((error, req, res, next) => {
+    console.error('Router error:', error);
+
+    if (error instanceof multer.MulterError) {
+        let message = 'File upload error';
+        
+        switch (error.code) {
+            case 'LIMIT_FILE_SIZE':
+                message = 'File is too large. Maximum size is 10MB';
+                break;
+            case 'LIMIT_FILE_COUNT':
+                message = 'Too many files. Maximum is 10 files';
+                break;
+            case 'LIMIT_UNEXPECTED_FILE':
+                message = 'Unexpected field name in file upload';
+                break;
+        }
+
+        return res.status(400).json({
+            success: false,
+            message,
+            error: process.env.NODE_ENV === 'development' ? error.message : undefined
+        });
     }
-    if (error.code === 'LIMIT_FILE_COUNT') {
-      return res.status(400).json({
+
+    res.status(500).json({
         success: false,
-        message: 'Too many files. Maximum is 10 files'
-      });
-    }
-    return res.status(400).json({
-      success: false,
-      message: 'File upload error',
-      error: error.message
+        message: 'Internal server error',
+        error: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
-  }
-  next(error);
 });
+
+module.exports = router;
 // Fetch all posts endpoint
 app.get("/api/posts", async (req, res) => {
   try {
