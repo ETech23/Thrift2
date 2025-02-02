@@ -35,25 +35,7 @@ app.use(cors({
 // Connect to MongoDB Atlas
 mongoose.connect(process.env.MONGO_URI,).then(() => console.log("✅ MongoDB Connected")).catch(err => console.log("❌ MongoDB Error:", err));
 
-// Configure Cloudinary
-/**cloudinary.config({
-    cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
-    api_key: process.env.CLOUDINARY_API_KEY,
-    api_secret: process.env.CLOUDINARY_API_SECRET
-});**/
 
-// Cloudinary Image Upload Setup 
-/**
-const storage = new CloudinaryStorage({
-    cloudinary,
-    params: { folder: "marketplace_items", allowed_formats: ["jpg", "png", "jpeg"] },
-});
-
-// Test route
-app.get("/api/test", (req, res) => {
-    res.json({ message: "API is working!" });
-});
-**/
 
 // User Schema
 const UserSchema = new mongoose.Schema({
@@ -160,297 +142,36 @@ const authenticate = (req, res, next) => {
     }
 };
 
-// Define the Post Schema
-const postSchema = new mongoose.Schema({
-  content: {
-    type: String,
-    required: false, // Not required if media is present
-  },
-  media: [
-    {
-      url: {
-        type: String,
-        required: true,
-      },
-      type: {
-        type: String,
-        enum: ["image", "video"],
-        required: true,
-      },
-      publicId: {
-        type: String,
-        required: true,
-      },
-    },
-  ],
-  user: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: "User",
-    required: true,
-  },
-  createdAt: {
-    type: Date,
-    default: Date.now,
-  },
-});
+app.use((error, req, res, next) => {
+  console.error('Server error:', error);
 
-const path = require('path');
-const fs = require('fs');
-
-// Make sure uploads directory exists
-const uploadDir = './uploads';
-if (!fs.existsSync(uploadDir)) {
-  fs.mkdirSync(uploadDir, { recursive: true });
-}
-
-// Configure Multer
-/** const storage = multer.diskStorage({
-  destination: function(req, file, cb) {
-    cb(null, uploadDir);
-  },
-  filename: function(req, file, cb) {
-    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-    cb(null, uniqueSuffix + path.extname(file.originalname));
-  }
-});
-**/
-// File filter
-/**const fileFilter = function(req, file, cb) {
-  const allowedTypes = [
-    'image/jpeg',
-    'image/jpg',
-    'image/png',
-    'image/gif',
-    'video/mp4'
-  ];
-
-  if (allowedTypes.includes(file.mimetype)) {
-    cb(null, true);
-  } else {
-    cb(new Error('Invalid file type. Only JPEG, PNG, GIF and MP4 are allowed.'), false);
-  }
-};
-**/
-
-// Multer configuration
-const storage = multer.diskStorage({
-    destination: async function(req, file, cb) {
-        const uploadDir = './uploads';
-        try {
-            await fs.mkdir(uploadDir, { recursive: true });
-            cb(null, uploadDir);
-        } catch (error) {
-            cb(error);
-        }
-    },
-    filename: function(req, file, cb) {
-        const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-        cb(null, file.fieldname + '-' + uniqueSuffix + path.extname(file.originalname));
-    }
-});
-
-
-
-const fileFilter = (req, file, cb) => {
-    const allowedTypes = [
-        'image/jpeg',
-        'image/jpg',
-        'image/png',
-        'image/gif',
-        'video/mp4'
-    ];
-
-    if (allowedTypes.includes(file.mimetype)) {
-        cb(null, true);
-    } else {
-        cb(new Error(`Invalid file type: ${file.mimetype}. Only JPEG, PNG, GIF and MP4 are allowed.`));
-    }
-};
-// Initialize Multer
-const uploadMiddleware = multer({
-  storage: storage,
-  fileFilter: fileFilter,
-  limits: {
-    fileSize: 10 * 1024 * 1024, // 10MB
-    files: 10 // Maximum number of files
-  }
-});
-const upload = multer({
-    storage,
-    fileFilter,
-    limits: {
-        fileSize: 10 * 1024 * 1024, // 10MB
-        files: 10
-    }
-});
-
-// Cloudinary configuration validation
-if (!process.env.CLOUDINARY_CLOUD_NAME || 
-    !process.env.CLOUDINARY_API_KEY || 
-    !process.env.CLOUDINARY_API_SECRET) {
-    throw new Error('Missing required Cloudinary configuration');
-}
-
-// Configure Cloudinary
-cloudinary.config({
-    cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
-    api_key: process.env.CLOUDINARY_API_KEY,
-    api_secret: process.env.CLOUDINARY_API_SECRET
-});
-
-
-
-
-// Utility function to clean up uploaded files
-async function cleanupFiles(files) {
-    if (!files) return;
+  if (error instanceof multer.MulterError) {
+    let message = 'File upload error';
     
-    for (const file of files) {
-        try {
-            await fs.unlink(file.path);
-        } catch (error) {
-            console.error(`Failed to delete temporary file ${file.path}:`, error);
-        }
-    }
-}
-
-// Utility function to clean up Cloudinary uploads
-async function cleanupCloudinaryUploads(mediaUrls) {
-    if (!mediaUrls || !mediaUrls.length) return;
-    
-    for (const media of mediaUrls) {
-        try {
-            await cloudinary.uploader.destroy(media.publicId);
-        } catch (error) {
-            console.error(`Failed to delete Cloudinary resource ${media.publicId}:`, error);
-        }
-    }
-}
-
-router.post('/posts', 
-    authenticate, 
-    upload.array('media', 10),
-    async (req, res) => {
-        const mediaUrls = [];
-        const startTime = Date.now();
-        
-        try {
-            // Log request details
-            console.log(`[${startTime}] Post creation request received`);
-            console.log('User ID:', req.userId);
-            console.log('Content:', req.body.content);
-            console.log('Files count:', req.files?.length || 0);
-
-            // Input validation
-            if (!req.body.content && (!req.files || req.files.length === 0)) {
-                throw new Error('Post must contain either content or media files');
-            }
-
-            // Handle media uploads
-            if (req.files && req.files.length > 0) {
-                for (const file of req.files) {
-                    try {
-                        console.log(`Uploading file: ${file.originalname}`);
-                        const result = await cloudinary.uploader.upload(file.path, {
-                            folder: 'marketplace_posts',
-                            resource_type: 'auto',
-                            timeout: 60000 // 60 seconds timeout
-                        });
-
-                        mediaUrls.push({
-                            url: result.secure_url,
-                            type: result.resource_type === 'video' ? 'video' : 'image',
-                            publicId: result.public_id
-                        });
-                    } catch (uploadError) {
-                        console.error(`Failed to upload ${file.originalname}:`, uploadError);
-                        await cleanupCloudinaryUploads(mediaUrls);
-                        throw new Error(`Failed to upload ${file.originalname}: ${uploadError.message}`);
-                    }
-                }
-            }
-
-            // Create and save post
-            const post = new Post({
-                content: req.body.content,
-                media: mediaUrls,
-                user: req.userId
-            });
-
-            await post.save();
-
-            // Clean up temporary files
-            await cleanupFiles(req.files);
-
-            const duration = Date.now() - startTime;
-            console.log(`[${startTime}] Post creation completed in ${duration}ms`);
-
-            return res.status(201).json({
-                success: true,
-                message: 'Post created successfully',
-                post: await post.populate('user', 'username avatar')
-            });
-
-        } catch (error) {
-            const duration = Date.now() - startTime;
-            console.error(`[${startTime}] Post creation failed after ${duration}ms:`, error);
-
-            // Clean up on failure
-            await cleanupCloudinaryUploads(mediaUrls);
-            await cleanupFiles(req.files);
-
-            // Determine appropriate error status and message
-            let statusCode = 500;
-            let errorMessage = 'An unexpected error occurred while creating the post';
-
-            if (error.message.includes('must contain either content or media')) {
-                statusCode = 400;
-                errorMessage = error.message;
-            } else if (error.name === 'ValidationError') {
-                statusCode = 400;
-                errorMessage = 'Invalid post data provided';
-            }
-
-            return res.status(statusCode).json({
-                success: false,
-                message: errorMessage,
-                error: process.env.NODE_ENV === 'development' ? error.message : undefined
-            });
-        }
-    }
-);
-
-// Error handling middleware
-router.use((error, req, res, next) => {
-    console.error('Router error:', error);
-
-    if (error instanceof multer.MulterError) {
-        let message = 'File upload error';
-        
-        switch (error.code) {
-            case 'LIMIT_FILE_SIZE':
-                message = 'File is too large. Maximum size is 10MB';
-                break;
-            case 'LIMIT_FILE_COUNT':
-                message = 'Too many files. Maximum is 10 files';
-                break;
-            case 'LIMIT_UNEXPECTED_FILE':
-                message = 'Unexpected field name in file upload';
-                break;
-        }
-
-        return res.status(400).json({
-            success: false,
-            message,
-            error: process.env.NODE_ENV === 'development' ? error.message : undefined
-        });
+    switch (error.code) {
+      case 'LIMIT_FILE_SIZE':
+        message = 'File is too large. Maximum size is 10MB';
+        break;
+      case 'LIMIT_FILE_COUNT':
+        message = 'Too many files. Maximum is 10 files';
+        break;
+      case 'LIMIT_UNEXPECTED_FILE':
+        message = 'Unexpected field name in file upload';
+        break;
     }
 
-    res.status(500).json({
-        success: false,
-        message: 'Internal server error',
-        error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    return res.status(400).json({
+      success: false,
+      message,
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
+  }
+
+  res.status(500).json({
+    success: false,
+    message: 'Internal server error',
+    error: process.env.NODE_ENV === 'development' ? error.message : undefined
+  });
 });
 
 module.exports = router;
