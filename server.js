@@ -40,7 +40,8 @@ cloudinary.config({
     api_secret: process.env.CLOUDINARY_API_SECRET
 });
 
-// Cloudinary Image Upload Setup
+// Cloudinary Image Upload Setup 
+/**
 const storage = new CloudinaryStorage({
     cloudinary,
     params: { folder: "marketplace_items", allowed_formats: ["jpg", "png", "jpeg"] },
@@ -50,7 +51,7 @@ const storage = new CloudinaryStorage({
 app.get("/api/test", (req, res) => {
     res.json({ message: "API is working!" });
 });
-
+**/
 
 // User Schema
 const UserSchema = new mongoose.Schema({
@@ -157,21 +158,6 @@ const authenticate = (req, res, next) => {
     }
 };
 
-const fileFilter = (req, file, cb) => {
-  const allowedTypes = ["image/jpeg", "image/png", "image/gif", "video/mp4"];
-  if (allowedTypes.includes(file.mimetype)) {
-    cb(null, true);
-  } else {
-    cb(new Error("Invalid file type. Only JPG, PNG, GIF, and MP4 are allowed."), false);
-  }
-};
-
-const upload = multer({
-  storage,
-  fileFilter,
-  limits: { fileSize: 50 * 1024 * 1024 }, // Limit file size to 100MB
-});
-
 // Define the Post Schema
 const postSchema = new mongoose.Schema({
   content: {
@@ -206,50 +192,70 @@ const postSchema = new mongoose.Schema({
   },
 });
 
-// Create the Post model
-const Post = mongoose.model("Post", postSchema);
+const path = require('path');
+const fs = require('fs');
 
-// Error handling middleware for multer
-const handleMulterError = (err, req, res, next) => {
-  if (err instanceof multer.MulterError) {
-    // A Multer error occurred when uploading
-    return res.status(400).json({
-      success: false,
-      message: 'File upload error',
-      error: err.message
-    });
-  } else if (err) {
-    // An unknown error occurred
-    return res.status(500).json({
-      success: false,
-      message: 'Error uploading file',
-      error: err.message
-    });
+// Make sure uploads directory exists
+const uploadDir = './uploads';
+if (!fs.existsSync(uploadDir)) {
+  fs.mkdirSync(uploadDir, { recursive: true });
+}
+
+// Configure Multer
+const storage = multer.diskStorage({
+  destination: function(req, file, cb) {
+    cb(null, uploadDir);
+  },
+  filename: function(req, file, cb) {
+    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+    cb(null, uniqueSuffix + path.extname(file.originalname));
   }
-  next();
+});
+
+// File filter
+const fileFilter = function(req, file, cb) {
+  const allowedTypes = [
+    'image/jpeg',
+    'image/jpg',
+    'image/png',
+    'image/gif',
+    'video/mp4'
+  ];
+
+  if (allowedTypes.includes(file.mimetype)) {
+    cb(null, true);
+  } else {
+    cb(new Error('Invalid file type. Only JPEG, PNG, GIF and MP4 are allowed.'), false);
+  }
 };
-app.post(
-  "/api/posts",
-  authenticate,
-  upload.array("media", 10),
-  handleMulterError,
+
+// Initialize Multer
+const uploadMiddleware = multer({
+  storage: storage,
+  fileFilter: fileFilter,
+  limits: {
+    fileSize: 10 * 1024 * 1024, // 10MB
+    files: 10 // Maximum number of files
+  }
+});
+
+// Post creation route
+app.post('/api/posts', 
+  authenticate, // Your authentication middleware
+  uploadMiddleware.array('media', 10), // Use the initialized Multer instance
   async (req, res) => {
-    // Initialize mediaUrls array outside try block
     let mediaUrls = [];
     
     try {
+      // Log received data
+      console.log('Files:', req.files);
+      console.log('Body:', req.body);
+
       const { content } = req.body;
       const mediaFiles = req.files;
       const userId = req.userId;
 
-      // Input validation
-      if (!userId) {
-        return res.status(401).json({
-          success: false,
-          message: "Authentication failed - invalid or missing user ID"
-        });
-      }
-
+      // Validate input
       if (!content && (!mediaFiles || mediaFiles.length === 0)) {
         return res.status(400).json({
           success: false,
@@ -257,36 +263,31 @@ app.post(
         });
       }
 
-      // Handle media files if present
+      // Handle media files
       if (mediaFiles && mediaFiles.length > 0) {
-        // Upload to Cloudinary
         for (const file of mediaFiles) {
           try {
             const result = await cloudinary.uploader.upload(file.path, {
               folder: "marketplace_posts",
               resource_type: "auto"
             });
-            
+
             mediaUrls.push({
               url: result.secure_url,
               type: result.resource_type,
               publicId: result.public_id
             });
-          } catch (cloudinaryError) {
-            // Clean up any successfully uploaded files
-            await Promise.all(
-              mediaUrls.map(media => 
-                cloudinary.uploader.destroy(media.publicId)
-                  .catch(console.error)
-              )
-            );
-
-            throw new Error(`Media upload failed: ${cloudinaryError.message}`);
+          } catch (uploadError) {
+            // Clean up any uploaded files on error
+            for (const media of mediaUrls) {
+              await cloudinary.uploader.destroy(media.publicId).catch(console.error);
+            }
+            throw new Error(`Failed to upload ${file.originalname}: ${uploadError.message}`);
           }
         }
       }
 
-      // Create and save the post
+      // Create post
       const newPost = new Post({
         content,
         media: mediaUrls,
@@ -295,10 +296,13 @@ app.post(
 
       await newPost.save();
 
-      // Emit Socket.io event if available
-      const io = req.app.get("io");
-      if (io) {
-        io.emit("newPost", newPost);
+      // Clean up temp files
+      if (mediaFiles) {
+        mediaFiles.forEach(file => {
+          fs.unlink(file.path, err => {
+            if (err) console.error('Error deleting temp file:', err);
+          });
+        });
       }
 
       return res.status(201).json({
@@ -308,35 +312,54 @@ app.post(
       });
 
     } catch (error) {
-      // Clean up any uploaded files if an error occurs
-      await Promise.all(
-        mediaUrls.map(media => 
-          cloudinary.uploader.destroy(media.publicId)
-            .catch(console.error)
-        )
-      );
+      console.error('Error creating post:', error);
+
+      // Clean up any cloudinary uploads if post creation failed
+      for (const media of mediaUrls) {
+        await cloudinary.uploader.destroy(media.publicId).catch(console.error);
+      }
+
+      // Clean up temp files
+      if (req.files) {
+        req.files.forEach(file => {
+          fs.unlink(file.path, err => {
+            if (err) console.error('Error deleting temp file:', err);
+          });
+        });
+      }
 
       return res.status(500).json({
         success: false,
-        message: "An error occurred while creating the post",
-        error: error.message,
-        stack: process.env.NODE_ENV === "development" ? error.stack : undefined
+        message: "Failed to create post",
+        error: error.message
       });
-
-    } finally {
-      // Clean up temporary files
-      if (req.files) {
-        req.files.forEach(file => {
-          try {
-            fs.unlinkSync(file.path);
-          } catch (error) {
-            console.error(`Failed to delete temporary file ${file.path}:`, error);
-          }
-        });
-      }
     }
   }
 );
+
+// Error handling middleware
+app.use((error, req, res, next) => {
+  if (error instanceof multer.MulterError) {
+    if (error.code === 'LIMIT_FILE_SIZE') {
+      return res.status(400).json({
+        success: false,
+        message: 'File is too large. Maximum size is 10MB'
+      });
+    }
+    if (error.code === 'LIMIT_FILE_COUNT') {
+      return res.status(400).json({
+        success: false,
+        message: 'Too many files. Maximum is 10 files'
+      });
+    }
+    return res.status(400).json({
+      success: false,
+      message: 'File upload error',
+      error: error.message
+    });
+  }
+  next(error);
+});
 // Fetch all posts endpoint
 app.get("/api/posts", async (req, res) => {
   try {
@@ -407,6 +430,7 @@ app.post("/api/login", async (req, res) => {
         user: { _id: user._id, email: user.email, name: user.name }  // ✅ Ensure user._id is included
     });
 });
+/**
 // POST route to create a new post
 app.post("/api/posts", authenticate, upload.array("media", 10), async (req, res) => {
     try {
@@ -462,12 +486,12 @@ app.get("/api/posts", async (req, res) => {
         console.error("Error fetching posts:", error);
         res.status(500).json({ success: false, message: "Failed to fetch posts." });
     }
-});
+});**/
 
 // Import the currency constants
 const { currencySymbol } = require('./constants');
 
-app.post("/api/items/create", authenticate, upload.single("image"), async (req, res) => {
+/**app.post("/api/items/create", authenticate, upload.single("image"), async (req, res) => {
     try {
         console.log("🔍 Received Data:", req.body);
         console.log("🔍 Uploaded File:", req.file);
@@ -533,7 +557,7 @@ app.post("/api/items/create", authenticate, upload.single("image"), async (req, 
         });
     }
 });
-
+**/
 // Fetch a Single Item by ID
 app.get("/api/items/:id", async (req, res) => {
     try {
