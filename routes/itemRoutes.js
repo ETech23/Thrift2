@@ -18,17 +18,16 @@ cloudinary.config({
 // Multer setup for file validation and storage
 const storage = multer.memoryStorage();
 const upload = multer({
-  storage: storage,
-  limits: { fileSize: 10 * 1024 * 1024 },  // Max file size 10MB
-  fileFilter: (req, file, cb) => {
-    const allowedMimeTypes = ['image/jpeg', 'image/png', 'image/jpg', 'image/gif'];
-    if (!allowedMimeTypes.includes(file.mimetype)) {
-      return cb(new Error('Invalid file type. Only JPEG, PNG, GIF are allowed.'));
+    storage: storage,
+    limits: { fileSize: 10 * 1024 * 1024 },  // Max file size 10MB
+    fileFilter: (req, file, cb) => {
+        const allowedMimeTypes = ['image/jpeg', 'image/png', 'image/jpg', 'image/gif'];
+        if (!allowedMimeTypes.includes(file.mimetype)) {
+            return cb(new Error('Invalid file type. Only JPEG, PNG, GIF are allowed.'));
+        }
+        cb(null, true);
     }
-    cb(null, true);
-  },
-}).array('media', 3);  // Limit to 3 files
-
+}).any(); // Change `.array('media', 3)` to `.any()` to allow all fields
 // Routes
 router.post(
   '/',
