@@ -2,18 +2,12 @@ const express = require('express');
 const multer = require('multer');
 const cloudinary = require('cloudinary').v2;
 const { body, validationResult } = require('express-validator');
+
 const authMiddleware = require('../middleware/authMiddleware');
 const Item = require('../models/Item');
 const itemController = require('../controllers/itemController');
 
 const router = express.Router();
-
-// Setup Cloudinary
-cloudinary.config({
-  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
-  api_key: process.env.CLOUDINARY_API_KEY,
-  api_secret: process.env.CLOUDINARY_API_SECRET,
-});
 
 // Multer setup for file validation and storage
 const storage = multer.memoryStorage();
@@ -28,36 +22,46 @@ const upload = multer({
         cb(null, true);
     }
 }).any(); // Change `.array('media', 3)` to `.any()` to allow all fields
+
 // Routes
 router.post(
-  '/',
-  authMiddleware,
-  upload,
-  body('title').notEmpty().withMessage('Title is required'),
-  body('price').notEmpty().isNumeric().withMessage('Price must be a number'),
-  body('description').notEmpty().withMessage('Description is required'),
-  body('location').notEmpty().withMessage('Location is required'),
-  body('category').notEmpty().withMessage('Category is required'),
-  async (req, res, next) => {
-    // Validation errors
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) {
-      return res.status(400).json({ errors: errors.array() });
+    '/',
+    authMiddleware,
+    upload,
+    // Update these to match your frontend
+    body('title').notEmpty().withMessage('Title is required'),
+    body('price').notEmpty().isNumeric().withMessage('Price must be a number'),
+    body('description').notEmpty().withMessage('Description is required'),
+    body('location').notEmpty().withMessage('Location is required'),
+    body('category').notEmpty().withMessage('Category is required'),
+    async (req, res, next) => {
+        // Log incoming request details for debugging
+        console.log('Request body:', req.body);
+        console.log('Request files:', req.files);
+
+        // Validation errors
+        const errors = validationResult(req);
+        if (!errors.isEmpty()) {
+            console.error('Validation errors:', errors.array());
+            return res.status(400).json({ 
+                success: false,
+                errors: errors.array(),
+                message: errors.array().map(err => err.msg).join(', ')
+            });
+        }
+
+        try {
+            // Call the item controller to handle the upload
+            await itemController.createItem(req, res, next);
+        } catch (error) {
+            console.error('Item creation error:', error);
+            res.status(500).json({ 
+                success: false, 
+                message: 'Failed to create item',
+                error: error.message 
+            });
+        }
     }
-
-    // Call the item controller to handle the upload
-    await itemController.createItem(req, res, next);
-  }
 );
-
-// Get all items (with pagination)
-router.get('/', async (req, res) => {
-  try {
-    const items = await Item.find().sort({ createdAt: -1 });
-    res.status(200).json(items);
-  } catch (error) {
-    res.status(500).json({ message: 'Failed to fetch items' });
-  }
-});
 
 module.exports = router;
