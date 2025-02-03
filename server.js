@@ -1,581 +1,377 @@
-require("dotenv").config();
-const express = require("express");
-const mongoose = require("mongoose");
-const cors = require("cors");
-const bcrypt = require("bcryptjs");
-const jwt = require("jsonwebtoken");
-const multer = require("multer");
-const { CloudinaryStorage } = require("multer-storage-cloudinary");
-const cloudinary = require("cloudinary").v2;
-const http = require("http");
-const { Server } = require("socket.io");
-const router = express.Router();
-const fs = require('fs').promises;
-const path = require('path');
+import express from 'express';
+import multer from 'multer';
+import path from 'path';
+import { fileURLToPath } from 'url';
+import { dirname } from 'path';
+import fs from 'fs/promises';
+import pkg from 'cloudinary';
+const { v2: cloudinary } = pkg;
+import mongoose from 'mongoose';
+import jwt from 'jsonwebtoken';
+import dotenv from 'dotenv';
+import cors from 'cors';
+import { rateLimit } from 'express-rate-limit';
+import helmet from 'helmet';
+import compression from 'compression';
+import { promisify } from 'util';
 
-// Initialize Express
+// Initialize environment variables
+dotenv.config();
+
+// Promisify jwt.verify
+const verifyToken = promisify(jwt.verify);
+
+// Get current file path
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+
+// Validate environment variables
+const requiredEnvVars = [
+  'MONGO_URI',
+  'JWT_SECRET',
+  'CLOUDINARY_CLOUD_NAME',
+  'CLOUDINARY_API_KEY',
+  'CLOUDINARY_API_SECRET',
+  'MAX_FILE_SIZE',
+  'MAX_FILES',
+  'CLOUDINARY_UPLOAD_TIMEOUT',
+  'FUNCTION_TIMEOUT',
+  'FRONTEND_URL'
+];
+
+const missingVars = requiredEnvVars.filter(varName => !process.env[varName]);
+if (missingVars.length > 0) {
+  throw new Error(`Missing required environment variables: ${missingVars.join(', ')}`);
+}
+
+// Initialize Express app with security middleware
 const app = express();
-app.use(cors());
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
 
-
-// Create HTTP server for Socket.io
-const server = http.createServer(app);
-const io = new Server(server, {
-    cors: { origin: "https://thrift-a.vercel.app" }
-});
-
-// Allow Frontend URL to Access Backend
-const FRONTEND_URL = process.env.FRONTEND_URL || "http://localhost:5000";
-
+// Security middlewares
+app.use(helmet());
 app.use(cors({
-	origin: "https://thrift-a.vercel.app", // Allow only this frontend
-    credentials: true,    // Allow cookies (if needed)
+  origin: process.env.FRONTEND_URL,
+  credentials: true
+}));
+app.use(compression());
+
+// Rate limiting
+const limiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 100 // limit each IP to 100 requests per windowMs
+});
+app.use('/api/', limiter);
+
+// Body parsing middleware with size limits
+app.use(express.json({ limit: process.env.MAX_FILE_SIZE }));
+app.use(express.urlencoded({ 
+  extended: true, 
+  limit: process.env.MAX_FILE_SIZE 
 }));
 
-
-// Connect to MongoDB Atlas
-mongoose.connect(process.env.MONGO_URI,).then(() => console.log("✅ MongoDB Connected")).catch(err => console.log("❌ MongoDB Error:", err));
-
-
-
-// User Schema
-const UserSchema = new mongoose.Schema({
-    username: { type: String, required: true },
-    email: { type: String, required: true, unique: true },
-    password: { type: String, required: true },
-});
-
-const User = mongoose.model("User", UserSchema);
-
-
-app.get("/api/posts", async (req, res) => {
+// MongoDB connection with retry logic
+class DatabaseConnection {
+  static async connect() {
     try {
-        const posts = await Post.find().populate("user", "username email"); // Fetch posts
-        res.status(200).json({ success: true, posts });
+      await mongoose.connect(process.env.MONGO_URI, {
+        serverSelectionTimeoutMS: parseInt(process.env.FUNCTION_TIMEOUT)
+      });
+      console.log('Connected to MongoDB');
     } catch (error) {
-        console.error("Error fetching posts:", error);
-        res.status(500).json({ success: false, message: "Failed to fetch posts." });
+      console.error('MongoDB connection error:', error);
+      throw error;
     }
-});
+  }
 
-// Item Schema
-const ItemSchema = new mongoose.Schema({
-    name: { 
-        type: String, 
-        required: true 
-    },
-    price: { 
-        type: Number, 
-        required: true 
-    },
-    currency: {
-        type: String,
-        required: true,
-        default: 'NGN',
-        enum: ['NGN', 'USD', 'EUR', 'GBP', 'KES', 'ZAR', 'AED', 'GHS', 'XAF', 'XOF']
-    },
-    formattedPrice: {
-        type: String,
-        required: true
-    },
-    category: { 
-        type: String, 
-        required: true 
-    },
-    location: { 
-        type: String, 
-        required: true 
-    },
-    imageUrl: { 
-        type: String, 
-        required: true 
-    },
-    anonymous: { 
-        type: Boolean, 
-        default: false 
-    },
-    seller: { 
-        type: mongoose.Schema.Types.ObjectId, 
-        ref: "User", 
-        required: true 
-    },
-    postedBy: { 
-        type: mongoose.Schema.Types.ObjectId, 
-        ref: "User" 
-    }
-}, {
-    timestamps: true
-});
-
-// Optional: Add a pre-save middleware to ensure formattedPrice is always set
-ItemSchema.pre('save', function(next) {
-    if (this.isModified('price') || this.isModified('currency') || !this.formattedPrice) {
-        const symbol = currencySymbol[this.currency] || '₦';
-        this.formattedPrice = `${symbol}${this.price.toLocaleString()}`;
-    }
-    next();
-});
-
-const Item = mongoose.model("Item", ItemSchema);
-
-// Chat Message Schema
-const MessageSchema = new mongoose.Schema({
-    sender: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
-    receiver: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
-    text: { type: String, required: true },
-    timestamp: { type: Date, default: Date.now }
-});
-
-const Message = mongoose.model("Message", MessageSchema);
-
-
-// Middleware to Verify Token
-const authenticate = (req, res, next) => {
-    const token = req.headers.authorization;
-    if (!token) return res.status(401).json({ success: false, message: "Unauthorized" });
-
+  static async disconnect() {
     try {
-        const decoded = jwt.verify(token.split(" ")[1], process.env.JWT_SECRET);
-        req.userId = decoded.userId;
-        next();
-    } catch {
-        res.status(401).json({ success: false, message: "Invalid token" });
+      await mongoose.disconnect();
+      console.log('Disconnected from MongoDB');
+    } catch (error) {
+      console.error('MongoDB disconnection error:', error);
+      throw error;
     }
+  }
+}
+
+// Cloudinary configuration
+cloudinary.config({
+  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+  api_key: process.env.CLOUDINARY_API_KEY,
+  api_secret: process.env.CLOUDINARY_API_SECRET,
+  timeout: parseInt(process.env.CLOUDINARY_UPLOAD_TIMEOUT)
+});
+
+// Post Schema using the latest Mongoose features
+const postSchema = new mongoose.Schema({
+  content: {
+    type: String,
+    trim: true
+  },
+  media: [{
+    url: {
+      type: String,
+      required: true,
+      trim: true
+    },
+    type: {
+      type: String,
+      enum: ['image', 'video'],
+      required: true
+    },
+    publicId: {
+      type: String,
+      required: true,
+      trim: true
+    }
+  }],
+  user: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    required: true,
+    index: true
+  }
+}, {
+  timestamps: true,
+  toJSON: { virtuals: true },
+  toObject: { virtuals: true }
+});
+
+// Create indexes
+postSchema.index({ createdAt: -1 });
+postSchema.index({ user: 1, createdAt: -1 });
+
+const Post = mongoose.model('Post', postSchema);
+
+// Modern authentication middleware using async/await
+const authenticate = async (req, res, next) => {
+  try {
+    const authHeader = req.headers.authorization;
+    if (!authHeader?.startsWith('Bearer ')) {
+      return res.status(401).json({
+        success: false,
+        message: 'Authentication required'
+      });
+    }
+
+    const token = authHeader.split(' ')[1];
+    const decoded = await verifyToken(token, process.env.JWT_SECRET);
+    req.userId = decoded.userId;
+    next();
+  } catch (error) {
+    return res.status(401).json({
+      success: false,
+      message: 'Invalid or expired token'
+    });
+  }
 };
 
-app.use((error, req, res, next) => {
-  console.error('Server error:', error);
+// File upload configuration
+class FileUploadConfig {
+  static async initialize() {
+    const uploadDir = path.join(__dirname, 'uploads');
+    await fs.mkdir(uploadDir, { recursive: true });
+    return uploadDir;
+  }
 
-  if (error instanceof multer.MulterError) {
-    let message = 'File upload error';
+  static createMulterConfig(uploadDir) {
+    const storage = multer.diskStorage({
+      destination: (req, file, cb) => cb(null, uploadDir),
+      filename: (req, file, cb) => {
+        const uniqueSuffix = `${Date.now()}-${Math.random().toString(36).substring(2)}`;
+        cb(null, uniqueSuffix + path.extname(file.originalname));
+      }
+    });
+
+    const fileFilter = (req, file, cb) => {
+      const allowedTypes = new Set(['image/jpeg', 'image/png', 'image/gif', 'video/mp4']);
+      if (allowedTypes.has(file.mimetype)) {
+        cb(null, true);
+      } else {
+        cb(new Error('Invalid file type. Only JPEG, PNG, GIF, and MP4 are allowed.'));
+      }
+    };
+
+    return multer({
+      storage,
+      fileFilter,
+      limits: {
+        fileSize: parseInt(process.env.MAX_FILE_SIZE),
+        files: parseInt(process.env.MAX_FILES)
+      }
+    });
+  }
+}
+
+// Resource cleanup utilities
+class ResourceCleaner {
+  static async cleanupFiles(files) {
+    if (!files) return;
     
-    switch (error.code) {
-      case 'LIMIT_FILE_SIZE':
-        message = 'File is too large. Maximum size is 10MB';
-        break;
-      case 'LIMIT_FILE_COUNT':
-        message = 'Too many files. Maximum is 10 files';
-        break;
-      case 'LIMIT_UNEXPECTED_FILE':
-        message = 'Unexpected field name in file upload';
-        break;
-    }
-
-    return res.status(400).json({
-      success: false,
-      message,
-      error: process.env.NODE_ENV === 'development' ? error.message : undefined
-    });
+    await Promise.all(files.map(file => 
+      fs.unlink(file.path).catch(err => 
+        console.error(`Error deleting file ${file.path}:`, err)
+      )
+    ));
   }
 
-  res.status(500).json({
-    success: false,
-    message: 'Internal server error',
-    error: process.env.NODE_ENV === 'development' ? error.message : undefined
-  });
-});
-
-module.exports = router;
-// Fetch all posts endpoint
-app.get("/api/posts", async (req, res) => {
-  try {
-    const posts = await Post.find()
-      .populate("user", "name avatar") // Populate user details
-      .sort({ createdAt: -1 }); // Sort by latest posts first
-
-    return res.status(200).json({
-      success: true,
-      message: "Posts fetched successfully",
-      posts,
-    });
-  } catch (error) {
-    return res.status(500).json({
-      success: false,
-      message: "Failed to fetch posts",
-      error: error.message,
-    });
+  static async cleanupCloudinaryResources(mediaUrls) {
+    if (!mediaUrls?.length) return;
+    
+    await Promise.all(mediaUrls.map(media => 
+      cloudinary.uploader.destroy(media.publicId).catch(err => 
+        console.error(`Error deleting Cloudinary resource ${media.publicId}:`, err)
+      )
+    ));
   }
-});
+}
 
-// User Registration
-app.post("/api/register", async (req, res) => {
+// Initialize file upload
+const uploadDir = await FileUploadConfig.initialize();
+const upload = FileUploadConfig.createMulterConfig(uploadDir);
+
+// Post creation endpoint
+app.post('/api/posts', 
+  authenticate, 
+  upload.array('media', parseInt(process.env.MAX_FILES)), 
+  async (req, res) => {
+    const mediaUrls = [];
+
     try {
-        const { username, email, password } = req.body;  // ✅ Expect "username", not "name"
+      const { content } = req.body;
+      const mediaFiles = req.files;
+      const userId = req.userId;
 
-        if (!username || !email || !password) {
-            return res.status(400).json({ success: false, message: "All fields are required." });
-        }
+      if (!content && (!mediaFiles?.length)) {
+        return res.status(400).json({
+          success: false,
+          message: 'Post must contain either content or media files'
+        });
+      }
 
-        const existingUser = await User.findOne({ email });
-        if (existingUser) {
-            return res.status(400).json({ success: false, message: "Email already in use." });
-        }
-
-        const hashedPassword = await bcrypt.hash(password, 10);
-        const user = new User({ username, email, password: hashedPassword });  // ✅ Change "name" to "username"
-
-        await user.save();
-        console.log("✅ New User Registered:", user);
-
-        res.json({ success: true, message: "User registered successfully!" });
-
-    } catch (error) {
-        console.error("❌ Registration Error:", error);
-        res.status(500).json({ success: false, message: "Server error", error: error.message });
-    }
-});
-// User Login
-app.post("/api/login", async (req, res) => {
-    const { email, password } = req.body;
-    const user = await User.findOne({ email });
-
-    if (!user) {
-        return res.status(400).json({ success: false, message: "User not found" });
-    }
-
-    const isMatch = await bcrypt.compare(password, user.password);
-    if (!isMatch) {
-        return res.status(400).json({ success: false, message: "Invalid password" });
-    }
-
-    const token = jwt.sign({ userId: user._id }, process.env.JWT_SECRET, { expiresIn: "12h" });
-
-    res.json({
-        success: true,
-        token,
-        user: { _id: user._id, email: user.email, name: user.name }  // ✅ Ensure user._id is included
-    });
-});
-/**
-// POST route to create a new post
-app.post("/api/posts", authenticate, upload.array("media", 10), async (req, res) => {
-    try {
-        const { content } = req.body; // Get content from the request body
-        const mediaFiles = req.files; // Get uploaded media files
-        const userId = req.userId; // Get user ID from authentication middleware
-
-        // Validate input
-        if (!content && (!mediaFiles || mediaFiles.length === 0)) {
-            return res.status(400).json({ success: false, message: "Please provide content or upload media." });
-        }
-
-        // Upload media files to Cloudinary
-        const mediaUrls = [];
-        for (const file of mediaFiles) {
+      if (mediaFiles?.length) {
+        await Promise.all(mediaFiles.map(async (file) => {
+          try {
             const result = await cloudinary.uploader.upload(file.path, {
-                folder: "marketplace_posts", // Folder in Cloudinary
-                resource_type: "auto", // Automatically detect if it's an image or video
+              folder: 'marketplace_posts',
+              resource_type: 'auto',
+              timeout: parseInt(process.env.CLOUDINARY_UPLOAD_TIMEOUT)
             });
 
             mediaUrls.push({
-                url: result.secure_url, // Cloudinary URL
-                type: result.resource_type, // "image" or "video"
+              url: result.secure_url,
+              type: result.resource_type,
+              publicId: result.public_id
             });
-        }
+          } catch (error) {
+            throw new Error(`Failed to upload ${file.originalname}: ${error.message}`);
+          }
+        }));
+      }
 
-        // Create a new post in MongoDB
-        const newPost = new Post({
-            content,
-            media: mediaUrls,
-            user: userId, // Associate the post with the user
-        });
+      const newPost = await Post.create({
+        content,
+        media: mediaUrls,
+        user: userId
+      });
 
-        await newPost.save();
+      await ResourceCleaner.cleanupFiles(mediaFiles);
 
-        // Emit a Socket.io event to notify clients about the new post
-        io.emit("newPost", newPost);
-
-        // Return the created post
-        res.status(201).json({ success: true, post: newPost });
+      return res.status(201).json({
+        success: true,
+        message: 'Post created successfully',
+        post: newPost
+      });
     } catch (error) {
-        console.error("Error creating post:", error);
-        res.status(500).json({ success: false, message: "Failed to create post." });
+      await ResourceCleaner.cleanupCloudinaryResources(mediaUrls);
+      await ResourceCleaner.cleanupFiles(req.files);
+
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to create post',
+        error: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error'
+      });
     }
 });
 
-// GET route to fetch all posts
-app.get("/api/posts", async (req, res) => {
-    try {
-        const posts = await Post.find().populate("user", "username email"); // Populate user details
-        res.status(200).json({ success: true, posts });
-    } catch (error) {
-        console.error("Error fetching posts:", error);
-        res.status(500).json({ success: false, message: "Failed to fetch posts." });
-    }
-});**/
-
-// Import the currency constants
-const { currencySymbol } = require('./constants');
-
-/**app.post("/api/items/create", authenticate, upload.single("image"), async (req, res) => {
-    try {
-        console.log("🔍 Received Data:", req.body);
-        console.log("🔍 Uploaded File:", req.file);
-
-        const { name, price, category, location, anonymous, currency = 'NGN' } = req.body;
-
-        // Validate currency
-        if (!currencySymbol[currency]) {
-            return res.status(400).json({
-                success: false,
-                message: "Invalid currency selected"
-            });
-        }
-
-        if (!req.file) {
-            return res.status(400).json({
-                success: false,
-                message: "Image upload failed."
-            });
-        }
-
-        const numericPrice = parseFloat(price);
-        if (isNaN(numericPrice)) {
-            return res.status(400).json({
-                success: false,
-                message: "Invalid price format"
-            });
-        }
-
-        const imageUrl = req.file.path;
-
-        // Generate formatted price before creating the item
-        const formattedPrice = `${currencySymbol[currency]}${numericPrice.toLocaleString()}`;
-
-        const newItem = new Item({
-            name,
-            price: numericPrice,
-            currency,
-            formattedPrice, // Add this field
-            category,
-            location,
-            imageUrl,
-            anonymous,
-            seller: req.userId,
-            postedBy: req.userId
-        });
-
-        await newItem.save();
-        console.log("✅ Item Saved:", newItem);
-
-        res.json({
-            success: true,
-            message: "Item created successfully!",
-            item: newItem
-        });
-
-    } catch (error) {
-        console.error("❌ Error creating item:", error);
-        res.status(500).json({
-            success: false,
-            message: "Server error",
-            error: error.message
-        });
-    }
-});
-**/
-// Fetch a Single Item by ID
-app.get("/api/items/:id", async (req, res) => {
-    try {
-        const item = await Item.findById(req.params.id).populate("seller", "username email");
-        if (!item) {
-            return res.status(404).json({ success: false, message: "Item not found" });
-        }
-
-        res.json({ success: true, item });
-    } catch (error) {
-        console.error("❌ Error fetching item:", error);
-        res.status(500).json({ success: false, message: "Server error" });
-    }
-});
-
-// Fetch Items with Filtering
-app.get("/api/items", async (req, res) => {
-    try {
-        let { category, minPrice, maxPrice, keyword, location, limit } = req.query;
-        let filter = {};
-
-        if (category) filter.category = category;
-        if (minPrice) filter.price = { $gte: parseFloat(minPrice) };
-        if (maxPrice) filter.price = { ...filter.price, $lte: parseFloat(maxPrice) };
-        if (keyword) filter.name = { $regex: keyword, $options: "i" };
-        if (location) filter.location = { $regex: location, $options: "i" };
-
-        const query = Item.find(filter).populate("seller", "username email");
-        if (limit) query.limit(parseInt(limit));
-
-        const items = await query;
-
-        if (!items || items.length === 0) {
-            return res.json({ success: true, items: [] });  // ✅ Always return an empty array if no items
-        }
-
-        res.json({ success: true, items });
-    } catch (error) {
-        console.error("❌ Error fetching filtered items:", error);
-        res.status(500).json({ success: false, message: "Server error", items: [] });  // ✅ Always return `items`
-    }
-});
-
-// Real-time Chat with Socket.io
-io.on("connection", (socket) => {
-    console.log("🟢 User connected:", socket.id);
-
-    socket.on("joinRoom", ({ senderId, receiverId }) => {
-        const roomId = [senderId, receiverId].sort().join("-");
-        socket.join(roomId);
-        console.log(`User ${senderId} joined room ${roomId}`);
-    });
-
-    socket.on("sendMessage", async ({ senderId, receiverId, text }) => {
-        const roomId = [senderId, receiverId].sort().join("-");
-        const message = new Message({ sender: senderId, receiver: receiverId, text });
-
-        await message.save();
-        io.to(roomId).emit("receiveMessage", message);
-    });
-    socket.on("typing", ({ senderId, receiverId }) => {
-	io.to(receiverId).emit("showTyping", { senderId });
-    });
-    socket.on("receiveMessage", (message) => {
-	const messageDiv = document.createElement("div");
-messageDiv.className = `message ${message.sender === senderId ? "sent" : "received"}`;
-    messageDiv.innerHTML = `${message.text} <span class="status">${message.read ? "Seen" : "Delivered"}</span>`;
-    chatMessages.appendChild(messageDiv);
-    chatMessages.scrollTop = chatMessages.scrollHeight;
-
-    // Mark message as read
-    if (message.sender !== senderId) {
-        socket.emit("markAsRead", { messageId: message._id });
-    }
-});
-    socket.on("markAsRead", async ({ messageId }) => {
-    await Message.findByIdAndUpdate(messageId, { read: true });
-    io.emit("messageRead", { messageId });
-});
-
-    socket.on("disconnect", () => {
-        console.log("🔴 User disconnected:", socket.id);
-    });
-});
-
-// Fetch Chat Messages
-app.get("/api/chat/:userId", authenticate, async (req, res) => {
-    const messages = await Message.find({
-        $or: [
-            { sender: req.userId, receiver: req.params.userId },
-            { sender: req.params.userId, receiver: req.userId }
-        ]
-    }).sort({ timestamp: 1 });
-
-    res.json({ success: true, messages });
-});
-
-app.post("/api/chat/start", async (req, res) => {
-    try {
-        const { userId, sellerId, anonymous } = req.body;
-
-        if (!userId || !sellerId) {
-            return res.status(400).json({ success: false, message: "Missing user or seller ID" });
-        }
-
-        const existingChat = await Chat.findOne({ participants: { $all: [userId, sellerId] } });
-        if (existingChat) {
-            return res.json({ success: true, chatId: existingChat._id });
-        }
-
-        const newChat = new Chat({
-            participants: [userId, sellerId],
-            anonymous,
-        });
-
-        await newChat.save();
-        res.json({ success: true, chatId: newChat._id });
-
-    } catch (error) {
-        console.error("Error starting chat:", error);
-        res.status(500).json({ success: false, message: "Server error" });
-    }
-});
-
-const nodemailer = require("nodemailer");
-
-const transporter = nodemailer.createTransport({
-    service: "Gmail",
-    auth: {
-        user: process.env.EMAIL_USER,
-        pass: process.env.EMAIL_PASS,
-    },
-});
-
-async function sendEmailNotification(to, message) {
-    const mailOptions = {
-        from: process.env.EMAIL_USER,
-        to,
-        subject: "New Message Notification",
-        text: `You have a new message: "${message}"\n\nLogin to reply.`,
+// Error handling middleware
+app.use((error, req, res, next) => {
+  if (error instanceof multer.MulterError) {
+    const errorMessages = {
+      LIMIT_FILE_SIZE: `File is too large. Maximum size is ${process.env.MAX_FILE_SIZE / (1024 * 1024)}MB`,
+      LIMIT_FILE_COUNT: `Too many files. Maximum is ${process.env.MAX_FILES} files`,
     };
 
-    await transporter.sendMail(mailOptions);
-}
-
-// Handle socket connections
-io.on("connection", (socket) => {
-    console.log("A user connected");
-
-    // Real-time chat event listener
-    socket.on("sendMessage", async ({ senderId, receiverId, text }) => {
-        const message = new Message({ sender: senderId, receiver: receiverId, text });
-        await message.save();
-
-        // Check if the user is online
-        const receiverSocket = onlineUsers[receiverId]; // Assuming onlineUsers is a map of userId -> socket
-        if (!receiverSocket) {
-            // User is offline, send email
-            const receiver = await User.findById(receiverId);
-            if (receiver) {
-                await sendEmailNotification(receiver.email, text);
-            }
-        }
-
-        // Emit message to receiver if they're online
-        if (receiverSocket) {
-            io.to(receiverId).emit("receiveMessage", message);
-        }
+    return res.status(400).json({
+      success: false,
+      message: errorMessages[error.code] || 'File upload error',
+      error: error.message
     });
-    socket.on("typing", ({ senderId, receiverId }) => {
-	io.to(receiverId).emit("showTyping", { senderId });
+  }
+  next(error);
 });
-    socket.on("markAsRead", async ({ messageId }) => {
-    await Message.findByIdAndUpdate(messageId, { read: true });
-    io.emit("messageRead", { messageId });
-});
-    const multer = require("multer");
-const storage = multer.memoryStorage();
-const upload = multer({ storage });
 
-app.post("/messages/audio", upload.single("audio"), async (req, res) => {
-    const { sender, receiver } = req.body;
-    const audioBuffer = req.file.buffer;
+// Global error handler
+app.use((error, req, res, next) => {
+  console.error('Unhandled error:', error);
+  
+  res.status(500).json({
+    success: false,
+    message: 'Internal server error',
+    ...(process.env.NODE_ENV === 'development' && { error: error.message })
+  });
+});
+
+// Graceful shutdown handling
+const gracefulShutdown = async (signal) => {
+  console.log(`${signal} received. Starting graceful shutdown...`);
+  
+  try {
+    await DatabaseConnection.disconnect();
+    server.close(() => {
+      console.log('HTTP server closed');
+      process.exit(0);
+    });
+  } catch (error) {
+    console.error('Error during shutdown:', error);
+    process.exit(1);
+  }
+};
+
+// Start server and database
+const startServer = async () => {
+  try {
+    await DatabaseConnection.connect();
     
-    // Upload to Cloudinary or S3
-    const audioUrl = await uploadToCloudStorage(audioBuffer);
-
-    const message = new Message({ sender, receiver, audioUrl });
-    await message.save();
-
-    io.to(receiver).emit("receiveMessage", message);
-    res.status(201).json({ success: true, audioUrl });
-});
-
-    // Handle disconnection
-    socket.on("disconnect", () => {
-        console.log("A user disconnected");
-        // Handle user removal from onlineUsers if necessary
+    const server = app.listen(process.env.PORT, () => {
+      console.log(`Server running on port ${process.env.PORT}`);
     });
-});
 
-// Start Server with Socket.io
-const PORT = process.env.PORT || 5000;                      server.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`)); 
+    // Handle shutdown signals
+    ['SIGTERM', 'SIGINT'].forEach(signal => {
+      process.on(signal, () => gracefulShutdown(signal));
+    });
+
+    // Handle uncaught errors
+    process.on('unhandledRejection', (error) => {
+      console.error('Unhandled Promise Rejection:', error);
+      if (process.env.NODE_ENV === 'production') {
+        gracefulShutdown('Unhandled Promise Rejection');
+      }
+    });
+
+    process.on('uncaughtException', (error) => {
+      console.error('Uncaught Exception:', error);
+      if (process.env.NODE_ENV === 'production') {
+        gracefulShutdown('Uncaught Exception');
+      }
+    });
+
+    return server;
+  } catch (error) {
+    console.error('Failed to start server:', error);
+    process.exit(1);
+  }
+};
+
+startServer();
