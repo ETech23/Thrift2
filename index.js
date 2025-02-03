@@ -3,9 +3,8 @@ import dotenv from "dotenv";
 import cors from "cors";
 import morgan from "morgan";
 import dbConnect from "./utils/dbConnect.js";
-import itemRoutes from "./api/items.js";
-import authRoutes from "./api/auth.js";
-
+import itemRoutes from "./api/items.js";  // Use import here
+import authRoutes from './routes/authRoutes.js'; 
 dotenv.config(); // Load environment variables
 
 const app = express();
@@ -20,17 +19,17 @@ app.use(morgan("dev")); // Logging requests
 dbConnect();
 
 // Routes
-app.use("/api/items", itemRoutes);
+app.use("/api/items", itemRoutes);  // Use the route handler here
 app.use("/api/auth", authRoutes);
 
 // Default Route
 app.get("/", (req, res) => {
-  res.send("Welcome to Thrift2 API!");
+    res.send("Welcome to Thrift2 API!");
 });
 
 // Handle 404 Errors
 app.use((req, res) => {
-  res.status(404).json({ success: false, message: "Page not found" });
+    res.status(404).json({ success: false, message: "Page not found" });
 });
 
 // Export for Vercel
